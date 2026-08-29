@@ -1,10 +1,11 @@
 from collections.abc import Generator
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from universal_agent.domain.contracts import CreateRevisionRequest, RevisionResponse, TaskResponse
+from universal_agent.domain.contracts import CreateRevisionRequest, CreateSelectionRequest, RevisionResponse, SelectionResponse, TaskResponse, UploadedFileResponse
+from universal_agent.services.file_service import create_selection, save_uploaded_file
 from universal_agent.storage.models import SessionLocal, create_schema
 from universal_agent.storage.repository import create_revision, create_task, get_revision, revision_id, task_id
 
@@ -64,3 +65,23 @@ def read_revision(revision_id: UUID, session: Session = Depends(get_session)) ->
         kind=revision.kind,
         created_at=revision.created_at,
     )
+
+
+@app.post("/tasks/{task_id}/files", response_model=UploadedFileResponse, status_code=status.HTTP_201_CREATED)
+def post_file(task_id: UUID, file: UploadFile, session: Session = Depends(get_session)) -> UploadedFileResponse:
+    try:
+        uploaded = save_uploaded_file(session, task_id, file)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (OverflowError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    return UploadedFileResponse(id=UUID(uploaded.id), name=uploaded.name, parse_status=uploaded.parse_status, summary=uploaded.summary)
+
+
+@app.post("/tasks/{task_id}/selections", response_model=SelectionResponse, status_code=status.HTTP_201_CREATED)
+def post_selection(task_id: UUID, payload: CreateSelectionRequest, session: Session = Depends(get_session)) -> SelectionResponse:
+    try:
+        selection = create_selection(session, task_id, payload.file_ids)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    return SelectionResponse(id=UUID(selection.id), task_id=task_id, file_ids=[UUID(file_id) for file_id in selection.file_ids])
