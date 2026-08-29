@@ -1,0 +1,8 @@
+.git
+.worktrees
+.venv
+.analysis-studio-data
+apps/web/node_modules
+apps/web/dist
+__pycache__
+*.pyc

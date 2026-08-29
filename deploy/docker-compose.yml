@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      ANALYSIS_STUDIO_DATA_DIR: /data
+    volumes:
+      - analysis_data:/data
+    networks:
+      - studio
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+    networks:
+      - studio
+
+networks:
+  studio:
+    internal: true
+
+volumes:
+  analysis_data:
