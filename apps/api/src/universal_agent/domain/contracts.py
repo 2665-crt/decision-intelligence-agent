@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskResponse(BaseModel):
@@ -36,3 +36,17 @@ class SelectionResponse(BaseModel):
     id: UUID
     task_id: UUID
     file_ids: list[UUID]
+
+
+class PlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selection_id: UUID
+    objective: str = Field(min_length=1, max_length=2000)
+
+
+class PlanResponse(BaseModel):
+    revision_id: UUID
+    objective: str
+    operations: list[str]
+    confirmed: bool

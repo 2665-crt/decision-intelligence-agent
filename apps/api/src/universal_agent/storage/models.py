@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -23,6 +23,8 @@ class Revision(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     task_id: Mapped[str] = mapped_column(ForeignKey("analysis_tasks.id"), index=True)
     kind: Mapped[str] = mapped_column(String(32))
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
