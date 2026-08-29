@@ -89,3 +89,46 @@ def test_unsupported_file_is_rejected():
 
     assert response.status_code == 422
     assert "只支持" in response.json()["detail"]
+
+
+def test_one_dataset_can_restore_independent_analysis_sessions():
+    dataset_response = client.post(
+        "/api/datasets",
+        files={"file": ("sales.xlsx", make_sales_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert dataset_response.status_code == 201
+    dataset = dataset_response.json()
+
+    trend = client.post("/api/sessions", json={"dataset_id": dataset["id"], "objective": "分析营收趋势"})
+    risk = client.post("/api/sessions", json={"dataset_id": dataset["id"], "objective": "检测异常订单风险"})
+
+    assert trend.status_code == 201
+    assert risk.status_code == 201
+    assert trend.json()["dataset_id"] == dataset["id"]
+    assert trend.json()["id"] != risk.json()["id"]
+    assert trend.json()["messages"][0]["content"] == "分析营收趋势"
+
+    listed = client.get(f"/api/sessions?dataset_id={dataset['id']}")
+    assert listed.status_code == 200
+    assert {item["id"] for item in listed.json()} >= {trend.json()["id"], risk.json()["id"]}
+
+    renamed = client.patch(f"/api/sessions/{trend.json()['id']}", json={"title": "月度营收趋势"})
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "月度营收趋势"
+
+    copied = client.post(f"/api/sessions/{trend.json()['id']}/copy")
+    assert copied.status_code == 201
+    assert copied.json()["dataset_id"] == dataset["id"]
+    assert copied.json()["messages"] == []
+    assert copied.json()["status"] == "ready"
+
+    analyzed = client.post(f"/api/sessions/{trend.json()['id']}/analyze")
+    assert analyzed.status_code == 200
+    assert analyzed.json()["status"] == "succeeded"
+    assert analyzed.json()["notebook_cells"][0]["language"] == "python"
+    assert client.get(f"/api/sessions/{risk.json()['id']}").json()["status"] == "ready"
+
+    deleted = client.delete(f"/api/sessions/{copied.json()['id']}")
+    assert deleted.status_code == 204
+    assert client.get(f"/api/sessions/{copied.json()['id']}").status_code == 404

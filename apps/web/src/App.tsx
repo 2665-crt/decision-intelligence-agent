@@ -1,117 +1,98 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, PointerEvent, useEffect, useMemo, useState } from "react";
 
 type Intake = { kind: string; rows?: number; columns?: string[]; missing_cells?: number; paragraph_count?: number; text_preview?: string[] };
 type Report = { format: string; download_url: string };
 type Risk = { title: string; level: string; evidence: string[]; human_review_required: boolean; mitigation: string };
 type Option = { name: string; expected_benefit: string; cost: string; potential_harm: string; next_step: string };
-type Job = {
-  id: string;
-  objective: string;
-  source_name: string;
-  status: string;
-  intake: Intake;
+type Dataset = { id: string; source_name: string; intake: Intake };
+type Message = { role: "user" | "assistant"; content: string; created_at: string };
+type Session = {
+  id: string; dataset_id: string; source_name: string; objective: string; title: string; status: string; intake: Intake; messages: Message[];
   analysis?: { kind: string; numeric_summary?: Record<string, { count: number; missing: number; mean: number; min: number; max: number }>; quality?: { rows: number; columns: number; duplicate_rows: number; missing_cells: number } };
-  evidence?: { level: string; summary: string }[];
-  risks?: Risk[];
-  options?: Option[];
-  forecast?: { model?: string; is_recommended: boolean; baseline_mae?: number; candidate_mae?: number; limitations: string[] } | null;
-  charts?: { title: string; download_url: string }[];
-  reports?: Report[];
-  limitations?: string[];
+  evidence?: { level: string; summary: string }[]; risks?: Risk[]; options?: Option[]; forecast?: { model?: string; is_recommended: boolean; candidate_mae?: number; limitations: string[] } | null;
+  charts?: { title: string; download_url: string }[]; reports?: Report[]; limitations?: string[]; notebook_cells?: { language: string; title: string; code: string }[];
 };
 
+type ResultTab = "结果" | "图表" | "数据" | "Notebook" | "报告" | "文件";
+const resultTabs: ResultTab[] = ["结果", "图表", "数据", "Notebook", "报告", "文件"];
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init);
+  if (response.status === 204) return undefined as T;
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail ?? "操作失败");
+  return data as T;
+}
+
 export function App() {
-  const [objective, setObjective] = useState("");
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [active, setActive] = useState<Session | null>(null);
+  const [openIds, setOpenIds] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<ResultTab>("结果");
+  const [search, setSearch] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
+  const [datasetId, setDatasetId] = useState("");
+  const [objective, setObjective] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [fullscreen, setFullscreen] = useState(false);
+  const [columns, setColumns] = useState(() => JSON.parse(localStorage.getItem("analysis-studio-columns") ?? "[250, 1, 1]") as [number, number, number]);
 
-  const createJob = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!file || !objective.trim()) return;
-    setBusy(true);
-    setError("");
+  const loadWorkspace = async () => {
     try {
-      const form = new FormData();
-      form.set("objective", objective.trim());
-      form.set("file", file);
-      const response = await fetch("/api/jobs", { method: "POST", body: form });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail ?? "创建任务失败");
-      setJob(data);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "创建任务失败");
-    } finally {
-      setBusy(false);
-    }
+      const [nextDatasets, nextSessions] = await Promise.all([request<Dataset[]>("/api/datasets"), request<Session[]>("/api/sessions")]);
+      setDatasets(nextDatasets); setSessions(nextSessions);
+    } catch { setError("无法连接分析服务，请确认本机 API 已启动。"); }
   };
+  useEffect(() => { void loadWorkspace(); }, []);
+  useEffect(() => { localStorage.setItem("analysis-studio-columns", JSON.stringify(columns)); }, [columns]);
 
-  const analyse = async () => {
-    if (!job) return;
-    setBusy(true);
-    setError("");
+  const visibleSessions = useMemo(() => sessions.filter((session) => `${session.title} ${session.source_name}`.toLowerCase().includes(search.toLowerCase())), [search, sessions]);
+  const openSessions = openIds.map((id) => sessions.find((session) => session.id === id)).filter((item): item is Session => Boolean(item));
+  const applySession = (session: Session) => { setActive(session); setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]); setOpenIds((current) => current.includes(session.id) ? current : [...current, session.id]); };
+  const selectSession = async (session: Session) => { try { applySession(await request<Session>(`/api/sessions/${session.id}`)); } catch (caught) { setError(caught instanceof Error ? caught.message : "无法读取分析任务"); } };
+
+  const createSession = async (event: FormEvent) => {
+    event.preventDefault(); if ((!file && !datasetId) || !objective.trim()) return;
+    setBusy(true); setError("");
     try {
-      const response = await fetch(`/api/jobs/${job.id}/analyze`, { method: "POST" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail ?? "分析失败");
-      setJob(data);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "分析失败");
-    } finally {
-      setBusy(false);
-    }
+      let selectedDatasetId = datasetId;
+      if (file) { const form = new FormData(); form.set("file", file); const dataset = await request<Dataset>("/api/datasets", { method: "POST", body: form }); selectedDatasetId = dataset.id; setDatasets((current) => [dataset, ...current]); }
+      const session = await request<Session>("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dataset_id: selectedDatasetId, objective: objective.trim() }) });
+      applySession(session); setShowCreate(false); setFile(null); setDatasetId(""); setObjective("");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "创建任务失败"); } finally { setBusy(false); }
   };
+  const analyse = async () => { if (!active) return; const pending = { ...active, status: "analyzing" }; applySession(pending); setBusy(true); setError(""); try { applySession(await request<Session>(`/api/sessions/${active.id}/analyze`, { method: "POST" })); } catch (caught) { setError(caught instanceof Error ? caught.message : "分析失败"); } finally { setBusy(false); } };
+  const rename = async (session: Session) => { const title = window.prompt("分析任务名称", session.title)?.trim(); if (!title) return; try { applySession(await request<Session>(`/api/sessions/${session.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) })); } catch (caught) { setError(caught instanceof Error ? caught.message : "重命名失败"); } };
+  const copy = async (session: Session) => { try { applySession(await request<Session>(`/api/sessions/${session.id}/copy`, { method: "POST" })); } catch (caught) { setError(caught instanceof Error ? caught.message : "复制失败"); } };
+  const remove = async (session: Session) => { if (!window.confirm(`删除“${session.title}”及其分析结果？`)) return; try { await request<void>(`/api/sessions/${session.id}`, { method: "DELETE" }); setSessions((current) => current.filter((item) => item.id !== session.id)); setOpenIds((current) => current.filter((id) => id !== session.id)); if (active?.id === session.id) setActive(null); } catch (caught) { setError(caught instanceof Error ? caught.message : "删除失败"); } };
+  const resize = (event: PointerEvent<HTMLDivElement>, edge: "left" | "right") => { const start = event.clientX; const starting = [...columns] as [number, number, number]; const onMove = (move: globalThis.PointerEvent) => { const delta = move.clientX - start; setColumns(edge === "left" ? [Math.max(180, starting[0] + delta), Math.max(.55, starting[1] - delta / 500), starting[2]] : [starting[0], Math.max(.55, starting[1] + delta / 500), Math.max(.55, starting[2] - delta / 500)]); }; const onUp = () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); }; window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onUp); };
 
-  return <main className="shell">
-    <header>
-      <p className="eyebrow">ANALYSIS STUDIO</p>
-      <h1>通用数据分析与决策工作台</h1>
-      <p>上传数据或文档，得到可追溯的分析、预测风险、低损害方案和可下载报告。</p>
-    </header>
-
-    <section className="card intake-card">
-      <div><p className="step">01 / 提交材料</p><h2>开始一项分析</h2></div>
-      <form onSubmit={createJob}>
-        <label>上传数据或文档
-          <input aria-label="上传数据或文档" type="file" accept=".xlsx,.xls,.csv,.docx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-        </label>
-        {file && <p className="file-chip">{file.name}</p>}
-        <label>分析目标
-          <textarea aria-label="分析目标" value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="例如：分析营收趋势并预测下一季度风险；给出可先试点的方案" rows={4} />
-        </label>
-        <button type="submit" disabled={!file || !objective.trim() || busy}>{busy ? "处理中…" : "创建分析任务"}</button>
-      </form>
-      <p className="hint">支持 XLSX、XLS、CSV、DOCX。涉及医疗、法律、金融、化工或施工安全时，结果会要求人工复核。</p>
-    </section>
-
-    {error && <p className="error" role="alert">{error}</p>}
-
-    {job && <section className="card review-card">
-      <div><p className="step">02 / 核对输入</p><h2>{job.source_name}</h2><p>目标：{job.objective}</p></div>
-      <IntakeView intake={job.intake} />
-      {job.status === "ready" && <button onClick={analyse} disabled={busy}>{busy ? "正在执行…" : "开始分析"}</button>}
-    </section>}
-
-    {job?.status === "succeeded" && <Results job={job} />}
+  return <main className={`workspace ${fullscreen ? "result-fullscreen" : ""}`} style={{ gridTemplateColumns: `${columns[0]}px minmax(360px, ${columns[1]}fr) minmax(360px, ${columns[2]}fr)` }}>
+    <header className="topbar"><div><span className="brand-mark">◌</span><strong>Analysis Workspace</strong><span className="project-name">通用数据分析 Agent</span></div><div><button className="ghost" onClick={() => setShowCreate(true)}>新建分析</button><span className="status-dot">本机已保存</span></div></header>
+    <aside className="history-pane"><button className="new-session" onClick={() => setShowCreate(true)}>＋ 新建分析</button><label className="history-search"><span>⌕</span><input aria-label="搜索历史分析" type="search" placeholder="搜索历史分析" value={search} onChange={(event) => setSearch(event.target.value)} /></label><p className="pane-label">历史分析</p><div className="session-list">{visibleSessions.length ? visibleSessions.map((session) => <div className={`session-row ${active?.id === session.id ? "selected" : ""}`} key={session.id}><button className="session-open" onClick={() => void selectSession(session)}><strong>{session.title}</strong><span>{session.source_name}</span><small><Status status={session.status} /></small></button><div className="session-actions"><button aria-label={`重命名 ${session.title}`} onClick={() => void rename(session)}>✎</button><button aria-label={`复制 ${session.title}`} onClick={() => void copy(session)}>⧉</button><button aria-label={`删除 ${session.title}`} onClick={() => void remove(session)}>×</button></div></div>) : <p className="empty-history">还没有分析任务</p>}</div></aside>
+    <div className="splitter left-splitter" onPointerDown={(event) => resize(event, "left")} />
+    <section className="conversation-pane"><div className="session-tabs" role="tablist" aria-label="已打开的分析任务">{openSessions.map((session) => <button role="tab" aria-selected={active?.id === session.id} className={active?.id === session.id ? "active" : ""} key={session.id} onClick={() => void selectSession(session)}>{session.title}<span onClick={(event) => { event.stopPropagation(); setOpenIds((current) => current.filter((id) => id !== session.id)); if (active?.id === session.id) setActive(null); }}>×</span></button>)}<button aria-label="新建分析标签" onClick={() => setShowCreate(true)}>＋</button></div>{active ? <><div className="conversation-heading"><div><p className="pane-label">当前分析任务</p><h1>{active.title}</h1><p>{active.source_name} · <Status status={active.status} /></p></div><button className="ghost" onClick={() => void rename(active)}>重命名</button></div><div className="messages">{active.messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.created_at}-${index}`}><span>{message.role === "user" ? "你" : "Agent"}</span><p>{message.content}</p>{message.role === "assistant" && active.status === "succeeded" && <div className="message-links"><button onClick={() => setActiveTab("图表")}>查看图表</button><button onClick={() => setActiveTab("数据")}>查看数据</button><button onClick={() => setActiveTab("报告")}>查看报告</button></div>}</article>)}</div><div className="conversation-compose"><p>{active.status === "succeeded" ? "本次任务已完成。新需求请新建独立分析任务，避免结果混淆。" : "任务材料已就绪，可以开始独立分析。"}</p>{active.status === "ready" && <button onClick={() => void analyse()} disabled={busy}>{busy ? "正在分析…" : "开始分析"}</button>}</div></> : <EmptyWorkspace onCreate={() => setShowCreate(true)} />}</section>
+    <div className="splitter right-splitter" onPointerDown={(event) => resize(event, "right")} />
+    <section className="result-pane"><div className="result-header"><div role="tablist" aria-label="分析结果模块">{resultTabs.map((tab) => <button key={tab} role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>)}</div><button className="icon-button" aria-label={fullscreen ? "退出全屏" : "全屏结果"} onClick={() => setFullscreen((value) => !value)}>{fullscreen ? "↙" : "⛶"}</button></div><ResultPanel session={active} tab={activeTab} /></section>
+    <footer className="workspace-footer">{active ? <>文件：{active.source_name}<span>Agent 状态：<Status status={active.status} /></span></> : "选择一个历史分析，或创建新的 Dataset → Session 任务。"}</footer>
+    {showCreate && <CreateDialog datasets={datasets} file={file} datasetId={datasetId} objective={objective} busy={busy} onFile={setFile} onDataset={setDatasetId} onObjective={setObjective} onClose={() => setShowCreate(false)} onSubmit={createSession} />}{error && <p className="toast" role="alert">{error}<button onClick={() => setError("")}>×</button></p>}
   </main>;
 }
 
-function IntakeView({ intake }: { intake: Intake }) {
-  if (intake.kind === "spreadsheet") return <div className="facts"><strong>数据概览</strong><span>{intake.rows} 行 · {intake.columns?.length} 列 · 缺失 {intake.missing_cells ?? 0} 个</span><code>{intake.columns?.join("  |  ")}</code></div>;
-  return <div className="facts"><strong>文档概览</strong><span>{intake.paragraph_count} 段可读取文字</span><p>{intake.text_preview?.join(" ")}</p></div>;
+function CreateDialog({ datasets, file, datasetId, objective, busy, onFile, onDataset, onObjective, onClose, onSubmit }: { datasets: Dataset[]; file: File | null; datasetId: string; objective: string; busy: boolean; onFile: (file: File | null) => void; onDataset: (id: string) => void; onObjective: (objective: string) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) { return <div className="dialog-backdrop" role="presentation"><form className="create-dialog" onSubmit={onSubmit}><div><p className="pane-label">新建 Analysis Session</p><h2>从数据集创建独立分析</h2><p>上传新文件，或复用已有数据集；每项分析都有独立对话和结果。</p></div><label>上传数据集<input aria-label="上传数据集" type="file" accept=".xlsx,.xls,.csv,.docx" onChange={(event) => onFile(event.target.files?.[0] ?? null)} /></label>{file && <p className="selected-file">将创建数据集：{file.name}</p>}<label>或选择已有数据集<select aria-label="选择已有数据集" value={datasetId} disabled={Boolean(file)} onChange={(event) => onDataset(event.target.value)}><option value="">请选择</option>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.source_name}</option>)}</select></label><label>分析需求<textarea aria-label="分析需求" rows={4} value={objective} onChange={(event) => onObjective(event.target.value)} placeholder="例如：分析近 12 个月趋势并预测风险" /></label><div className="dialog-actions"><button type="button" className="ghost" onClick={onClose}>取消</button><button type="submit" disabled={busy || (!file && !datasetId) || !objective.trim()}>{busy ? "创建中…" : "创建任务"}</button></div></form></div>; }
+function EmptyWorkspace({ onCreate }: { onCreate: () => void }) { return <div className="empty-workspace"><p className="pane-label">Analysis Workspace</p><h1>选择或新建一个分析任务</h1><p>一个数据集可对应任意多个独立 Session：趋势、异常、预测和报告各自保存，不会混在一起。</p><button onClick={onCreate}>新建分析</button></div>; }
+function Status({ status }: { status: string }) { const labels: Record<string, string> = { ready: "等待分析", analyzing: "分析中", generating_report: "生成报告", succeeded: "已完成", failed: "执行失败" }; return <span className={`status ${status}`}>{status === "succeeded" ? "✓" : status === "failed" ? "!" : "●"} {labels[status] ?? status}</span>; }
+function ResultPanel({ session, tab }: { session: Session | null; tab: ResultTab }) {
+  if (!session) return <div className="result-empty"><h2>分析结果工作区</h2><p>结果、图表、数据、Notebook、报告和生成文件会集中显示在这里。</p></div>;
+  if (session.status !== "succeeded") return <div className="result-empty"><h2>{session.title}</h2><p>{session.status === "failed" ? "分析执行失败，请检查材料后新建或重试任务。" : "等待任务完成后显示模块化分析结果。"}</p></div>;
+  if (tab === "结果") return <div className="result-content"><h2>分析结论</h2><div className="kpi-grid"><Kpi label="数据事实" value={`${session.analysis?.quality?.rows ?? 0} 行`} /><Kpi label="风险项" value={`${session.risks?.length ?? 0} 项`} /><Kpi label="图表" value={`${session.charts?.length ?? 0} 张`} /></div><h3>关键发现</h3><ul>{session.evidence?.map((item, index) => <li key={index}>{item.summary}</li>)}</ul><h3>风险清单</h3>{session.risks?.map((risk) => <article className="risk-card" key={risk.title}><div><span className={`risk-level ${risk.level}`}>{risk.level}</span><strong>{risk.title}</strong></div><p>{risk.evidence.join(" ")}</p><small>缓解：{risk.mitigation}</small></article>)}<h3>低损害方案</h3>{session.options?.map((option) => <article className="option-card" key={option.name}><strong>{option.name}</strong><p>{option.expected_benefit}</p><small>成本：{option.cost} · 潜在损害：{option.potential_harm}</small></article>)}</div>;
+  if (tab === "图表") return <div className="result-content"><h2>图表</h2>{session.charts?.length ? session.charts.map((chart) => <article className="artifact-card" key={chart.title}><strong>{chart.title}</strong><a href={chart.download_url} target="_blank">在新窗口查看图表</a></article>) : <p>当前分析没有生成图表。</p>}</div>;
+  if (tab === "数据") return <div className="result-content"><h2>数据与质量</h2><p>{session.intake.kind === "spreadsheet" ? `${session.intake.rows} 行 · ${session.intake.columns?.length} 列 · 缺失 ${session.intake.missing_cells ?? 0} 个` : `${session.intake.paragraph_count} 段文档陈述`}</p>{session.analysis?.numeric_summary && <table><thead><tr><th>字段</th><th>均值</th><th>最小值</th><th>最大值</th><th>缺失</th></tr></thead><tbody>{Object.entries(session.analysis.numeric_summary).map(([name, value]) => <tr key={name}><td>{name}</td><td>{value.mean}</td><td>{value.min}</td><td>{value.max}</td><td>{value.missing}</td></tr>)}</tbody></table>}</div>;
+  if (tab === "Notebook") return <div className="result-content"><h2>Notebook</h2>{session.notebook_cells?.map((cell) => <article className="notebook-cell" key={cell.title}><strong>{cell.title}</strong><pre><code>{cell.code}</code></pre></article>)}</div>;
+  if (tab === "报告") return <div className="result-content"><h2>分析报告</h2><p>结论仅基于当前 Session 数据，执行前请结合实际业务约束复核。</p>{session.reports?.map((report) => <a className="report-link" key={report.format} href={report.download_url}>{report.format.toUpperCase()} 报告</a>)}</div>;
+  return <div className="result-content"><h2>生成文件</h2>{[...(session.charts ?? []), ...(session.reports ?? [])].map((item) => <a className="artifact-card" key={item.download_url} href={item.download_url}>{"title" in item ? item.title : `${item.format.toUpperCase()} 报告`}</a>)}</div>;
 }
-
-function Results({ job }: { job: Job }) {
-  return <section className="results">
-    <div className="result-title"><p className="step">03 / 分析结论</p><h2>可审阅的结果</h2></div>
-    <article className="card"><h3>数据事实</h3><ul>{job.evidence?.map((item, index) => <li key={index}><span className="tag">{item.level}</span>{item.summary}</li>)}</ul>
-      {job.analysis?.numeric_summary && <table><thead><tr><th>字段</th><th>均值</th><th>最小值</th><th>最大值</th><th>缺失</th></tr></thead><tbody>{Object.entries(job.analysis.numeric_summary).map(([name, value]) => <tr key={name}><td>{name}</td><td>{value.mean}</td><td>{value.min}</td><td>{value.max}</td><td>{value.missing}</td></tr>)}</tbody></table>}
-    </article>
-    {job.forecast && <article className="card"><h3>预测与不确定性</h3><p>{job.forecast.is_recommended ? `推荐使用 ${job.forecast.model}，候选模型 MAE 为 ${job.forecast.candidate_mae}。` : "没有推荐预测模型：候选模型未能胜过朴素基线。"}</p><ul>{job.forecast.limitations.map((limit, index) => <li key={index}>{limit}</li>)}</ul></article>}
-    <article className="card"><h3>风险清单</h3>{job.risks?.map((risk) => <div className="risk" key={risk.title}><div><span className={`level ${risk.level}`}>{risk.level}</span><strong>{risk.title}</strong></div><p>{risk.evidence.join(" ")}</p><p>缓解：{risk.mitigation}</p>{risk.human_review_required && <b>需要人工专业复核</b>}</div>)}</article>
-    <article className="card"><h3>方案比较</h3><div className="options">{job.options?.map((option) => <div className="option" key={option.name}><h4>{option.name}</h4><p>{option.expected_benefit}</p><dl><dt>成本</dt><dd>{option.cost}</dd><dt>潜在损害</dt><dd>{option.potential_harm}</dd></dl><p>{option.next_step}</p></div>)}</div></article>
-    {job.charts?.length ? <article className="card"><h3>图表</h3>{job.charts.map((chart) => <a key={chart.title} href={chart.download_url} target="_blank">查看 {chart.title}</a>)}</article> : null}
-    <article className="card"><h3>报告下载</h3><div className="reports">{job.reports?.map((report) => <a key={report.format} href={report.download_url}>{report.format.toUpperCase()} 报告</a>)}</div><p className="hint">{job.limitations?.join(" ")}</p></article>
-  </section>;
-}
+function Kpi({ label, value }: { label: string; value: string }) { return <div className="kpi"><span>{label}</span><strong>{value}</strong></div>; }

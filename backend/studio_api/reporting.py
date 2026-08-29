@@ -4,7 +4,7 @@ from pathlib import Path
 from docx import Document
 
 
-def render(job: dict, result: dict, directory: Path) -> list[dict]:
+def render(job: dict, result: dict, directory: Path, route: str = "jobs") -> list[dict]:
     reports = directory / "reports"
     reports.mkdir(exist_ok=True)
     lines = [
@@ -31,7 +31,7 @@ def render(job: dict, result: dict, directory: Path) -> list[dict]:
         document.add_paragraph(content)
     document.save(reports / "report.docx")
     return [
-        {"format": "markdown", "download_url": f"/api/jobs/{job['id']}/files/reports/report.md"},
-        {"format": "html", "download_url": f"/api/jobs/{job['id']}/files/reports/report.html"},
-        {"format": "docx", "download_url": f"/api/jobs/{job['id']}/files/reports/report.docx"},
+        {"format": "markdown", "download_url": f"/api/{route}/{job['id']}/files/reports/report.md"},
+        {"format": "html", "download_url": f"/api/{route}/{job['id']}/files/reports/report.html"},
+        {"format": "docx", "download_url": f"/api/{route}/{job['id']}/files/reports/report.docx"},
     ]

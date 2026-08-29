@@ -13,14 +13,24 @@ from .intake import read_spreadsheet
 HIGH_REVIEW_TERMS = ("医疗", "病", "法律", "合同", "金融", "贷款", "化工", "施工安全", "安全事故")
 
 
-def run(job: dict, directory: Path) -> dict:
-    source = next(directory.glob("source.*"))
+def run(job: dict, directory: Path, source: Path | None = None) -> dict:
+    source = source or next(directory.glob("source.*"))
     if job["intake"]["kind"] == "document":
         result = analyse_document(source, job["objective"])
     else:
         result = analyse_spreadsheet(source, job["objective"], directory)
+    result["notebook_cells"] = notebook_cells(job["intake"]["kind"], job["objective"])
     result["status"] = "succeeded"
     return result
+
+
+def notebook_cells(kind: str, objective: str) -> list[dict]:
+    if kind == "document":
+        return [{"language": "python", "title": "文档审阅", "code": "from docx import Document\n\ndocument = Document('source.docx')\nstatements = [p.text.strip() for p in document.paragraphs if p.text.strip()]"}]
+    return [
+        {"language": "python", "title": "读取与质量检查", "code": "import pandas as pd\n\nframe = pd.read_excel('source.xlsx')\nquality = {'rows': len(frame), 'missing_cells': int(frame.isna().sum().sum())}"},
+        {"language": "python", "title": "分析目标", "code": f"objective = {objective!r}\n# 使用白名单统计、趋势和预测函数；不执行模型生成的代码。"},
+    ]
 
 
 def analyse_spreadsheet(source: Path, objective: str, directory: Path) -> dict:
