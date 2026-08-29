@@ -1,9 +1,9 @@
 """Deterministic, allow-listed dataframe operations; no generated code or shell."""
 from dataclasses import asdict, dataclass
-from html import escape
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 
 ALLOWED_OPERATIONS = frozenset({"profile", "quality_check", "group_summary", "trend", "correlation", "anomaly"})
 
@@ -48,9 +48,15 @@ def _write_csv(output_dir: Path, name: str, rows: list[dict]) -> TableArtifact:
     return TableArtifact(name, rows, str(path))
 
 def _write_line_chart(output_dir: Path, frame: pd.DataFrame, x: str, y: str) -> ChartArtifact:
-    rows = "\n".join(f"<tr><td>{escape(str(a))}</td><td>{escape(str(b))}</td></tr>" for a, b in zip(frame[x], frame[y], strict=True))
     path = output_dir / "trend.html"
-    path.write_text(f"<!doctype html><meta charset='utf-8'><title>趋势图</title><h1>趋势图：{escape(y)}</h1><table><tr><th>{escape(x)}</th><th>{escape(y)}</th></tr>{rows}</table>", encoding="utf-8")
+    figure = go.Figure(go.Scatter(x=frame[x], y=frame[y], mode="lines+markers", name=str(y)))
+    figure.update_layout(
+        title=f"{y} 趋势",
+        xaxis_title=str(x),
+        yaxis_title=str(y),
+        template="plotly_white",
+    )
+    figure.write_html(path, include_plotlyjs=True, full_html=True)
     return ChartArtifact("trend", str(path))
 
 def run_operations(frame: pd.DataFrame, operations: list[str], output_dir: Path) -> RunResult:

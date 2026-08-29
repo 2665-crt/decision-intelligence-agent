@@ -11,4 +11,5 @@ def test_group_summary_writes_table_and_chart(tmp_path: Path) -> None:
 
     assert result["tables"]["summary_by_region"][0]["revenue_sum"] == 300
     assert Path(result["charts"][0]).suffix == ".html"
+    assert "Plotly.newPlot" in Path(result["charts"][0]).read_text(encoding="utf-8")
     assert all(item["level"] in {"A", "B"} for item in result["evidence"])

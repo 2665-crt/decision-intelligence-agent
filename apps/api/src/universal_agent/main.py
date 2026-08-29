@@ -93,7 +93,7 @@ def post_plan(payload: PlanRequest, session: Session = Depends(get_session)) -> 
     selection = get_selection(session, payload.selection_id)
     if selection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="selection not found")
-    operations = ["profile", "quality_check", "trend"]
+    operations = ["profile", "quality_check", "group_summary", "trend", "correlation", "anomaly", "forecast"]
     revision = create_plan_revision(session, selection, payload.objective, operations)
     return PlanResponse(revision_id=revision_id(revision), objective=payload.objective, operations=operations, confirmed=False)
 
@@ -119,5 +119,22 @@ def post_run(revision_id: UUID, session: Session = Depends(get_session)) -> dict
         result = run_confirmed_plan(session, run_id)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
-    artifacts = [{"revision_id": str(run_id), "path": item["path"]} for item in [*result["tables"].values(), *result["charts"], *({"path": path} for path in result["reports"])]]
-    return {"status": "succeeded", "revision_id": str(run_id), "artifacts": artifacts, "evidence": result["evidence"], "forecast": result["forecast"], "risk": result["risk"]}
+    artifacts = [
+        {"revision_id": str(run_id), "path": item["path"]}
+        for item in [
+            *result["tables"].values(),
+            *result["charts"],
+            *({"path": path} for path in result["reports"]),
+            *({"path": path} for path in result["decision_artifacts"]),
+        ]
+    ]
+    return {
+        "status": "succeeded",
+        "revision_id": str(run_id),
+        "artifacts": artifacts,
+        "evidence": result["evidence"],
+        "evidence_by_level": result["evidence_by_level"],
+        "forecast": result["forecast"],
+        "risk": result["risk"],
+        "options": result["options"],
+    }
