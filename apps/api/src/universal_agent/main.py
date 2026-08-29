@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from universal_agent.domain.contracts import CreateRevisionRequest, CreateSelectionRequest, PlanRequest, PlanResponse, RevisionResponse, SelectionResponse, TaskResponse, UploadedFileResponse
 from universal_agent.services.file_service import create_selection, save_uploaded_file
+from universal_agent.services.run_service import run_confirmed_plan
 from universal_agent.storage.models import SessionLocal, create_schema
 from universal_agent.storage.repository import confirm_revision, create_plan_revision, create_revision, create_task, get_revision, get_selection, revision_id, task_id
 
@@ -74,7 +75,7 @@ def post_file(task_id: UUID, file: UploadFile, session: Session = Depends(get_se
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (OverflowError, ValueError) as error:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     return UploadedFileResponse(id=UUID(uploaded.id), name=uploaded.name, parse_status=uploaded.parse_status, summary=uploaded.summary)
 
 
@@ -106,10 +107,15 @@ def post_confirm(revision_id: UUID, session: Session = Depends(get_session)) -> 
 
 
 @app.post("/revisions/{revision_id}/runs", status_code=status.HTTP_202_ACCEPTED)
-def post_run(revision_id: UUID, session: Session = Depends(get_session)) -> dict[str, str]:
+def post_run(revision_id: UUID, session: Session = Depends(get_session)) -> dict[str, object]:
     revision = get_revision(session, revision_id)
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="revision not found")
     if not revision.confirmed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="plan must be confirmed")
-    return {"status": "queued"}
+    try:
+        result = run_confirmed_plan(session, revision_id)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    artifacts = [{"revision_id": str(revision_id), "path": item["path"]} for item in [*result["tables"].values(), *result["charts"]]]
+    return {"status": "succeeded", "artifacts": artifacts, "evidence": result["evidence"]}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DecisionReport",
+  "type": "object",
+  "required": ["evidence", "risks", "suggestions"],
+  "properties": {
+    "evidence": {"type": "array", "items": {"type": "object", "required": ["level", "summary"]}},
+    "risks": {"type": "array", "items": {"type": "object", "required": ["description", "evidence", "human_review_required"]}},
+    "suggestions": {"type": "array", "items": {"type": "string"}}
+  }
+}

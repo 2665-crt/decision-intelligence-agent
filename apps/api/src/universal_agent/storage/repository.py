@@ -2,7 +2,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from universal_agent.storage.models import AnalysisTask, Revision, Selection, as_uuid
+from universal_agent.storage.models import AnalysisTask, Revision, Selection, UploadedFile, as_uuid
 
 
 def create_task(session: Session) -> AnalysisTask:
@@ -30,6 +30,19 @@ def get_revision(session: Session, revision_id: UUID) -> Revision | None:
 
 def get_selection(session: Session, selection_id: UUID) -> Selection | None:
     return session.get(Selection, str(selection_id))
+
+
+def get_selection_files(session: Session, revision_id: UUID) -> list[UploadedFile]:
+    revision = get_revision(session, revision_id)
+    if revision is None:
+        return []
+    selection_id = revision.snapshot.get("selection_id")
+    if not selection_id:
+        return []
+    selection = session.get(Selection, selection_id)
+    if selection is None:
+        return []
+    return session.query(UploadedFile).filter(UploadedFile.id.in_(selection.file_ids)).all()
 
 
 def create_plan_revision(session: Session, selection: Selection, objective: str, operations: list[str]) -> Revision:
