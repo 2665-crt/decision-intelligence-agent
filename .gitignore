@@ -7,3 +7,4 @@ __pycache__/
 .analysis-studio-data/
 apps/web/node_modules/
 apps/web/dist/
+apps/web/*.tsbuildinfo
