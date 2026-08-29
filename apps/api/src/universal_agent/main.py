@@ -75,7 +75,7 @@ def post_file(task_id: UUID, file: UploadFile, session: Session = Depends(get_se
     except LookupError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (OverflowError, ValueError) as error:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
     return UploadedFileResponse(id=UUID(uploaded.id), name=uploaded.name, parse_status=uploaded.parse_status, summary=uploaded.summary)
 
 
@@ -93,7 +93,10 @@ def post_plan(payload: PlanRequest, session: Session = Depends(get_session)) -> 
     selection = get_selection(session, payload.selection_id)
     if selection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="selection not found")
-    operations = ["profile", "quality_check", "group_summary", "trend", "correlation", "anomaly", "forecast"]
+    objective_text = payload.objective.casefold()
+    operations = ["profile", "quality_check", "group_summary", "trend", "correlation", "anomaly"]
+    if any(token in objective_text for token in ("forecast", "predict", "预测", "预估")):
+        operations.append("forecast")
     revision = create_plan_revision(session, selection, payload.objective, operations)
     return PlanResponse(revision_id=revision_id(revision), objective=payload.objective, operations=operations, confirmed=False)
 
@@ -118,7 +121,7 @@ def post_run(revision_id: UUID, session: Session = Depends(get_session)) -> dict
         run_id = revision_id if run_revision is revision else UUID(run_revision.id)
         result = run_confirmed_plan(session, run_id)
     except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
     artifacts = [
         {"revision_id": str(run_id), "path": item["path"]}
         for item in [
