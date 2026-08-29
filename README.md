@@ -2,17 +2,7 @@
 
 一个本地运行的通用分析工作台：上传 XLSX、XLS、CSV 或 DOCX，输入目标后得到数据概览、质量检查、趋势图、可用时的预测、风险清单、低损害优先的方案比较，以及 Markdown、HTML、Word 报告。
 
-## 直接启动
-
-Docker Desktop 引擎正常时：
-
-```powershell
-docker compose -f deploy/docker-compose.yml up -d --build
-```
-
-打开 `http://localhost:5173`。
-
-## 本地开发启动
+## 本机启动（默认，不依赖 Docker）
 
 ```powershell
 python -m venv .venv
@@ -23,6 +13,16 @@ pnpm --dir apps/web dev --host 127.0.0.1 --port 5173
 ```
 
 前端会把 `/api` 转发到本地 API 的 `8001` 端口。
+
+打开 `http://localhost:5173`。
+
+## Docker 部署（可选）
+
+仅在需要容器化部署时使用：
+
+```powershell
+docker compose -f deploy/docker-compose.yml up -d --build
+```
 
 ## 决策边界
 
