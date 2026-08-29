@@ -53,6 +53,12 @@ def create_plan_revision(session: Session, selection: Selection, objective: str,
     return revision
 
 
+def create_run_revision(session: Session, plan: Revision) -> Revision:
+    revision = Revision(task_id=plan.task_id, kind="run", confirmed=True, snapshot={**plan.snapshot, "parent_revision_id": plan.id})
+    session.add(revision); session.commit(); session.refresh(revision)
+    return revision
+
+
 def confirm_revision(session: Session, revision_id: UUID) -> Revision | None:
     revision = get_revision(session, revision_id)
     if revision is None:

@@ -8,7 +8,7 @@ from universal_agent.domain.contracts import CreateRevisionRequest, CreateSelect
 from universal_agent.services.file_service import create_selection, save_uploaded_file
 from universal_agent.services.run_service import run_confirmed_plan
 from universal_agent.storage.models import SessionLocal, create_schema
-from universal_agent.storage.repository import confirm_revision, create_plan_revision, create_revision, create_task, get_revision, get_selection, revision_id, task_id
+from universal_agent.storage.repository import confirm_revision, create_plan_revision, create_revision, create_run_revision, create_task, get_revision, get_selection, revision_id, task_id
 
 
 app = FastAPI(title="Universal Analysis Agent")
@@ -114,8 +114,10 @@ def post_run(revision_id: UUID, session: Session = Depends(get_session)) -> dict
     if not revision.confirmed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="plan must be confirmed")
     try:
-        result = run_confirmed_plan(session, revision_id)
+        run_revision = create_run_revision(session, revision)
+        run_id = revision_id if run_revision is revision else UUID(run_revision.id)
+        result = run_confirmed_plan(session, run_id)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
-    artifacts = [{"revision_id": str(revision_id), "path": item["path"]} for item in [*result["tables"].values(), *result["charts"]]]
-    return {"status": "succeeded", "artifacts": artifacts, "evidence": result["evidence"]}
+    artifacts = [{"revision_id": str(run_id), "path": item["path"]} for item in [*result["tables"].values(), *result["charts"], *({"path": path} for path in result["reports"])]]
+    return {"status": "succeeded", "revision_id": str(run_id), "artifacts": artifacts, "evidence": result["evidence"], "forecast": result["forecast"], "risk": result["risk"]}

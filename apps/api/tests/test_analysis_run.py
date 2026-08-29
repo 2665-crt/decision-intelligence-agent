@@ -14,4 +14,5 @@ def test_run_binds_all_artifacts_to_confirmed_revision() -> None:
     client.post(f"/revisions/{revision_id}/confirm")
     run = client.post(f"/revisions/{revision_id}/runs")
     assert run.status_code == 202
-    assert all(item["revision_id"] == revision_id for item in run.json()["artifacts"])
+    assert run.json()["revision_id"] != revision_id
+    assert all(item["revision_id"] == run.json()["revision_id"] for item in run.json()["artifacts"])
