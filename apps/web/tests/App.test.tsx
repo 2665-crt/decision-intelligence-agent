@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { App } from "../src/App";
+import { App, ResultPanel } from "../src/App";
 
 afterEach(cleanup);
 
@@ -24,4 +24,22 @@ test("renders a fixed workspace with session history and modular result tabs", (
   expect(screen.getByRole("tab", { name: "图表" })).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Notebook" })).toBeInTheDocument();
   expect(screen.getByText("选择或新建一个分析任务")).toBeInTheDocument();
+});
+
+test("prioritizes a direct answer and keeps data quality collapsed", () => {
+  render(<ResultPanel tab="结果" session={{
+    id: "risk-session", dataset_id: "dataset", source_name: "regional.xlsx", objective: "检测地区营收异常风险", title: "地区营收风险", status: "succeeded",
+    intake: { kind: "spreadsheet", rows: 36, columns: ["month", "region", "revenue"] }, messages: [],
+    core_conclusion: "south 是当前风险最高的对象：2025-01 至 2025-12 从 155 下降至 74，累计下降 52.3%。",
+    key_metrics: [{ label: "最高风险对象", value: "south", detail: "累计下降 52.3%" }],
+    sections: [{ title: "风险评估", items: [{ text: "south 风险 high。" }] }],
+    business_risks: [{ title: "south 持续营收下降", object: "south", level: "high", evidence: ["累计下降 52.3%。"], mitigation: "核对客户和销量。" }],
+    suggestions: [{ name: "优先处理 south", expected_benefit: "定位下降来源", cost: "中", potential_harm: "低", next_step: "核对数据" }],
+    data_quality: { summary: "36 行、3 列；缺失 0 个单元格。", limitations: [] }, charts: [], reports: [], limitations: [],
+  } as never} />);
+
+  expect(screen.getByRole("heading", { name: "核心结论" })).toBeInTheDocument();
+  expect(screen.getByText("south 是当前风险最高的对象", { exact: false })).toBeInTheDocument();
+  expect(screen.getByText("数据质量与分析限制").closest("details")).not.toHaveAttribute("open");
+  expect(screen.queryByText("低损害方案")).not.toBeInTheDocument();
 });

@@ -77,12 +77,17 @@ def test_excel_job_produces_analysis_risks_charts_and_reports():
     assert result["risks"]
     assert result["options"]
 
+    markdown_report = next(report for report in result["reports"] if report["format"] == "markdown")
+    markdown = client.get(markdown_report["download_url"]).text
+    assert markdown.index("## 核心结论") < markdown.index("## 数据质量与分析限制")
+    assert "north" in markdown.lower() and "%" in markdown
+
     word_report = next(report for report in result["reports"] if report["format"] == "docx")
     report = client.get(word_report["download_url"])
     assert report.status_code == 200
     headings = [paragraph.text for paragraph in Document(BytesIO(report.content)).paragraphs]
-    assert "文件事实" in headings
-    assert "待验证建议" in headings
+    assert "核心结论" in headings
+    assert "数据质量与分析限制" in headings
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():
