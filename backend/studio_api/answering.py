@@ -168,13 +168,10 @@ def _multi_metric_sections(plan: QuestionPlan, series: pd.DataFrame, summaries: 
     if "trend" in plan.types:
         sections.append({"title": "趋势分析", "items": [{"text": f"{item['metric']} 在 {item['period_start']} 至 {item['period_end']} 呈{item['direction']}趋势：{_number(item['first'])} 至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]})
     if "anomaly" in plan.types:
-        revenue_anomaly = _financial_metric_item(anomalies, "营业收入")
-        reason = _multi_metric_reason(series, revenue_anomaly["period"], plan.metric_columns) if revenue_anomaly else ""
         items = []
         for item in anomalies:
             text = f"{item['metric']} 的最大月度异常为 {item['period']}：当月 {_number(item['value'])}，环比{'下降' if item['change_pct'] < 0 else '上升'} {abs(item['change_pct']):.1f}%。"
-            if revenue_anomaly is item and reason:
-                text += f" 可能原因：{reason}"
+            text += f" 可能原因：{_multi_metric_reason(series, item['period'], plan.metric_columns)}"
             items.append({"text": text})
         sections.append({"title": "异常对象", "items": items or [{"text": "未识别到超过阈值的异常月份。"}]})
     return sections or [{"title": "关键指标", "items": [{"text": f"{item['metric']} 最新值 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]}]
@@ -230,14 +227,15 @@ def _multi_metric_reason(series: pd.DataFrame, period: str, metric_columns: tupl
     profit = _financial_metric_change(changes, "营业利润")
     if revenue is None or margin is None or profit is None:
         return "数据未提供足够的同期指标，无法判断联动原因。"
+    margin_direction = "上升" if margin > 0.1 else "下降" if margin < -0.1 else "稳定"
     same_direction = (revenue >= 0 and profit >= 0) or (revenue <= 0 and profit <= 0)
-    if same_direction and margin >= -1:
-        return "三项同向，毛利率稳定或略升，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
+    if same_direction and margin_direction == "上升":
+        return "营业收入与营业利润同向，毛利率上升，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
+    if same_direction and margin_direction == "稳定":
+        return "营业收入与营业利润同向，毛利率稳定，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
     if same_direction:
-        return "营业收入与营业利润同向，但毛利率下滑，收入规模变化与盈利效率变化共同影响营业利润的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
-    if margin < -1:
-        return "营业收入与营业利润反向且毛利率下滑，盈利效率变化与营业利润变化相关。数据未提供客户、价格或业务事件字段，不能进一步归因。"
-    return "营业收入与营业利润反向，三项指标未呈同向变化，当前数据只能确认指标联动，不能进一步归因。"
+        return "营业收入与营业利润同向，毛利率下降，收入规模变化与盈利效率变化共同影响营业利润的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
+    return f"营业收入与营业利润反向，毛利率{margin_direction}，当前数据只能确认指标联动，不能进一步归因。"
 
 
 def _financial_metric_change(changes: dict[str, float], metric: str) -> float | None:

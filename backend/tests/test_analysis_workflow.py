@@ -253,8 +253,43 @@ def test_multi_metric_explanation_reflects_same_direction_margin_change(tmp_path
     result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-04 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因", tmp_path)
 
     assert "2025-04 的指标联动显示：营业收入 环比上升 27.0%、毛利率 环比上升 0.4%、营业利润 环比上升 27.5%" in result["core_conclusion"]
-    assert "三项同向，毛利率稳定或略升" in result["core_conclusion"]
-    assert "未同向" not in result["core_conclusion"] and "毛利率下滑" not in result["core_conclusion"]
+    assert "营业收入与营业利润同向，毛利率上升" in result["core_conclusion"]
+    assert "毛利率稳定或略升" not in result["core_conclusion"]
+
+
+def test_multi_metric_explanation_names_a_declining_margin(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03", "2025-04"],
+            "营业收入": [100, 101, 102, 129.54],
+            "毛利额": [30, 30.3, 30.6, 36.27],
+            "营业利润": [15, 15.1, 15.2, 19.38],
+        }
+    )
+
+    result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-04 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因", tmp_path)
+
+    assert "营业收入与营业利润同向，毛利率下降" in result["core_conclusion"]
+    assert "毛利率上升" not in result["core_conclusion"] and "毛利率稳定" not in result["core_conclusion"]
+
+
+def test_operating_profit_only_anomaly_has_a_possible_reason(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03", "2025-04"],
+            "营业收入": [100, 101, 102, 103],
+            "毛利额": [30, 30.3, 30.6, 30.9],
+            "营业利润": [15, 15.1, 15.2, 7.6],
+        }
+    )
+
+    result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-04 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因", tmp_path)
+
+    anomaly_items = next(section["items"] for section in result["sections"] if section["title"] == "异常对象")
+    assert len(anomaly_items) == 1
+    assert "营业利润" in anomaly_items[0]["text"]
+    assert "2025-04" in anomaly_items[0]["text"]
+    assert "%" in anomaly_items[0]["text"] and "可能原因" in anomaly_items[0]["text"]
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():
