@@ -69,12 +69,20 @@ def _match(columns: list[str], keywords: tuple[str, ...]) -> str | None:
 def _requested_metrics(columns: list[str], numeric_columns: list[str], text: str) -> tuple[str, ...]:
     requested: list[tuple[int, str]] = []
     for column in numeric_columns:
-        position = text.find(column.lower())
+        normalised = normalise_label(column)
+        if normalised in {"毛利", "毛利额"} and "毛利率" in text:
+            continue
+        position = text.find(normalised)
         if position >= 0:
             requested.append((position, column))
-    if "毛利率" in text and "营业收入" in columns and "毛利额" in columns:
+    normalised_columns = {normalise_label(column) for column in columns}
+    if "毛利率" in text and "营业收入" in normalised_columns and normalised_columns.intersection({"毛利", "毛利额"}):
         requested.append((text.find("毛利率"), "毛利率"))
     return tuple(name for _, name in sorted(requested, key=lambda item: item[0]))
+
+
+def normalise_label(label: str) -> str:
+    return re.sub(r"[（(][^）)]*[）)]", "", str(label)).strip().lower()
 
 
 def _requests_dimension(text: str) -> bool:

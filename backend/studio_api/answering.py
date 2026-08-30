@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from .questioning import QuestionPlan, plan_question
+from .questioning import QuestionPlan, normalise_label, plan_question
 
 
 def analyse_spreadsheet(frame: pd.DataFrame, objective: str, directory: Path) -> dict:
@@ -59,7 +60,7 @@ def _build_multi_metric_answer(frame: pd.DataFrame, plan: QuestionPlan, director
     summaries = _metric_summaries(series)
     anomalies = _metric_anomalies(series)
     anomaly = _largest_metric_anomaly(anomalies)
-    sections = _multi_metric_sections(plan, summaries, anomalies)
+    sections = _multi_metric_sections(plan, series, summaries, anomalies)
     data_quality = {
         **quality,
         "summary": f"{quality['rows']} 行、{quality['columns']} 列；缺失 {quality['missing_cells']} 个单元格，重复 {quality['duplicate_rows']} 行。",
@@ -108,10 +109,12 @@ def _monthly_metric_series(frame: pd.DataFrame, plan: QuestionPlan) -> pd.DataFr
         working = working.loc[working["period"] <= plan.period_end]
     series: list[pd.DataFrame] = []
     for metric in plan.metric_columns:
-        if metric == "毛利率" and {"营业收入", "毛利额"} <= set(working.columns):
+        revenue_column = _column_by_normalised_name(working.columns, "营业收入")
+        gross_profit_column = _column_by_normalised_name(working.columns, "毛利", "毛利额")
+        if metric == "毛利率" and revenue_column and gross_profit_column:
             totals = working.assign(
-                _revenue=pd.to_numeric(working["营业收入"], errors="coerce"),
-                _gross_profit=pd.to_numeric(working["毛利额"], errors="coerce"),
+                _revenue=pd.to_numeric(working[revenue_column], errors="coerce"),
+                _gross_profit=pd.to_numeric(working[gross_profit_column], errors="coerce"),
             ).groupby("period", as_index=False)[["_revenue", "_gross_profit"]].sum(min_count=1)
             values = totals.assign(value=totals["_gross_profit"] / totals["_revenue"], metric=metric)[["period", "metric", "value"]]
         elif metric in working.columns:
@@ -122,6 +125,10 @@ def _monthly_metric_series(frame: pd.DataFrame, plan: QuestionPlan) -> pd.DataFr
             continue
         series.append(values.replace([np.inf, -np.inf], np.nan).dropna(subset=["value"]))
     return pd.concat(series, ignore_index=True).sort_values(["metric", "period"]) if series else pd.DataFrame(columns=["period", "metric", "value"])
+
+
+def _column_by_normalised_name(columns: pd.Index, *names: str) -> str | None:
+    return next((str(column) for column in columns if normalise_label(str(column)) in names), None)
 
 
 def _metric_summaries(series: pd.DataFrame) -> list[dict]:
@@ -156,12 +163,20 @@ def _largest_metric_anomaly(anomalies: list[dict]) -> dict | None:
     return max(anomalies, key=lambda item: abs(item["change_pct"])) if anomalies else None
 
 
-def _multi_metric_sections(plan: QuestionPlan, summaries: list[dict], anomalies: list[dict]) -> list[dict]:
+def _multi_metric_sections(plan: QuestionPlan, series: pd.DataFrame, summaries: list[dict], anomalies: list[dict]) -> list[dict]:
     sections = []
     if "trend" in plan.types:
         sections.append({"title": "趋势分析", "items": [{"text": f"{item['metric']} 在 {item['period_start']} 至 {item['period_end']} 呈{item['direction']}趋势：{_number(item['first'])} 至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]})
     if "anomaly" in plan.types:
-        sections.append({"title": "异常对象", "items": [{"text": f"{item['metric']} 的最大月度异常为 {item['period']}：当月 {_number(item['value'])}，环比{'下降' if item['change_pct'] < 0 else '上升'} {abs(item['change_pct']):.1f}%。"} for item in anomalies]})
+        revenue_anomaly = _financial_metric_item(anomalies, "营业收入")
+        reason = _multi_metric_reason(series, revenue_anomaly["period"], plan.metric_columns) if revenue_anomaly else ""
+        items = []
+        for item in anomalies:
+            text = f"{item['metric']} 的最大月度异常为 {item['period']}：当月 {_number(item['value'])}，环比{'下降' if item['change_pct'] < 0 else '上升'} {abs(item['change_pct']):.1f}%。"
+            if revenue_anomaly is item and reason:
+                text += f" 可能原因：{reason}"
+            items.append({"text": text})
+        sections.append({"title": "异常对象", "items": items or [{"text": "未识别到超过阈值的异常月份。"}]})
     return sections or [{"title": "关键指标", "items": [{"text": f"{item['metric']} 最新值 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]}]
 
 
@@ -178,26 +193,55 @@ def _multi_metric_conclusion(plan: QuestionPlan, series: pd.DataFrame, summaries
         if anomaly:
             statement += f"；最大月度异常为 {anomaly['period']}，当月 {_number(anomaly['value'])}，环比{'下降' if anomaly['change_pct'] < 0 else '上升'} {abs(anomaly['change_pct']):.1f}%"
         statements.append(statement + "。")
-    revenue_anomaly = anomaly_by_metric.get("营业收入")
-    if revenue_anomaly and {"营业收入", "毛利率", "营业利润"} <= set(summary_by_metric):
-        linked = _linked_metric_changes(series, revenue_anomaly["period"])
-        if linked:
-            statements.append(f"{revenue_anomaly['period']} 的指标联动显示：{linked}；收入变化与毛利率、营业利润未同向，说明收入规模变化未同步转化为利润，毛利率下滑是营业利润变化的可能数据层面原因。数据未提供客户、价格或业务事件字段，不能进一步归因。")
+    revenue_anomaly = _financial_metric_item(anomalies, "营业收入")
+    if revenue_anomaly and all(_financial_metric_item(summaries, metric) for metric in ("营业收入", "毛利率", "营业利润")):
+        reason = _multi_metric_reason(series, revenue_anomaly["period"], plan.metric_columns)
+        if reason:
+            statements.append(f"{revenue_anomaly['period']} 的指标联动显示：{_linked_metric_changes(series, revenue_anomaly['period'], plan.metric_columns)}；{reason}")
     if not statements:
         return "未找到可用于计算的数值指标，无法给出对象级结论。"
     return " ".join(statements)
 
 
-def _linked_metric_changes(series: pd.DataFrame, period: str) -> str:
-    statements = []
+def _financial_metric_item(items: list[dict], metric: str) -> dict | None:
+    return next((item for item in items if normalise_label(item["metric"]) == metric), None)
+
+
+def _linked_metric_changes(series: pd.DataFrame, period: str, metric_columns: tuple[str, ...]) -> str:
+    changes = _linked_metric_change_values(series, period)
+    return "、".join(f"{metric} 环比{'下降' if changes[metric] < 0 else '上升'} {abs(changes[metric]):.1f}%" for metric in metric_columns if metric in changes)
+
+
+def _linked_metric_change_values(series: pd.DataFrame, period: str) -> dict[str, float]:
+    changes = {}
     for metric, group in series.groupby("metric", sort=False):
         group = group.sort_values("period").copy()
         group["change_pct"] = group["value"].pct_change() * 100
         point = group.loc[group["period"].astype(str).str.startswith(period)]
         if not point.empty and pd.notna(point.iloc[0]["change_pct"]):
-            change = float(point.iloc[0]["change_pct"])
-            statements.append(f"{metric} 环比{'下降' if change < 0 else '上升'} {abs(change):.1f}%")
-    return "、".join(statements)
+            changes[metric] = float(point.iloc[0]["change_pct"])
+    return changes
+
+
+def _multi_metric_reason(series: pd.DataFrame, period: str, metric_columns: tuple[str, ...]) -> str:
+    changes = _linked_metric_change_values(series, period)
+    revenue = _financial_metric_change(changes, "营业收入")
+    margin = _financial_metric_change(changes, "毛利率")
+    profit = _financial_metric_change(changes, "营业利润")
+    if revenue is None or margin is None or profit is None:
+        return "数据未提供足够的同期指标，无法判断联动原因。"
+    same_direction = (revenue >= 0 and profit >= 0) or (revenue <= 0 and profit <= 0)
+    if same_direction and margin >= -1:
+        return "三项同向，毛利率稳定或略升，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
+    if same_direction:
+        return "营业收入与营业利润同向，但毛利率下滑，收入规模变化与盈利效率变化共同影响营业利润的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
+    if margin < -1:
+        return "营业收入与营业利润反向且毛利率下滑，盈利效率变化与营业利润变化相关。数据未提供客户、价格或业务事件字段，不能进一步归因。"
+    return "营业收入与营业利润反向，三项指标未呈同向变化，当前数据只能确认指标联动，不能进一步归因。"
+
+
+def _financial_metric_change(changes: dict[str, float], metric: str) -> float | None:
+    return next((change for name, change in changes.items() if normalise_label(name) == metric), None)
 
 
 def _multi_metric_key_metrics(summaries: list[dict], anomalies: list[dict]) -> list[dict]:
@@ -240,6 +284,12 @@ def validate_answer_completeness(answer: dict, plan: QuestionPlan) -> list[str]:
         missing.append("趋势问题缺少趋势方向")
     if "anomaly" in plan.types and "异常对象" not in titles:
         missing.append("异常问题缺少对象和幅度")
+    if len(plan.metric_columns) > 1 and "anomaly" in plan.types:
+        anomaly_items = next((section["items"] for section in answer.get("sections", []) if section["title"] == "异常对象"), [])
+        no_anomaly = any(item.get("text") == "未识别到超过阈值的异常月份。" for item in anomaly_items)
+        complete_anomaly = any("异常" in item.get("text", "") and re.search(r"\d{4}-\d{2}", item["text"]) and "%" in item["text"] and "可能原因" in item["text"] for item in anomaly_items)
+        if not no_anomaly and not complete_anomaly:
+            missing.append("异常问题缺少指标、月份、幅度或可能原因")
     if "risk" in plan.types and not answer.get("business_risks"):
         missing.append("风险问题缺少最高风险对象")
     if "forecast" in plan.types and answer.get("forecast") is None:

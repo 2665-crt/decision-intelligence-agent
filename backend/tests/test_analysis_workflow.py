@@ -69,7 +69,7 @@ def write_multi_metric_financial_workbook(tmp_path):
     sheet.append(["经营月报"])
     sheet.append(["单位：万元"])
     sheet.append([])
-    sheet.append(["期间", "营业收入", "毛利额", "营业利润"])
+    sheet.append(["期间", "营业收入（万元）", "毛利（万元）", "营业利润（万元）"])
     sheet.append(["2023-12", 9999, 3000, 1200])
     for index, period in enumerate(pd.period_range("2024-01", "2025-12", freq="M"), 1):
         revenue = 100 + index * 10
@@ -211,17 +211,50 @@ def test_financial_question_answers_all_requested_metrics_with_monthly_evidence(
     plan = plan_question(frame, request)
     result = analyse_spreadsheet(frame, request, tmp_path)
 
-    assert plan.metric_columns == ("营业收入", "毛利率", "营业利润")
+    assert plan.metric_columns == ("营业收入（万元）", "毛利率", "营业利润（万元）")
     assert str(plan.period_start)[:7] == "2024-01"
     assert str(plan.period_end)[:7] == "2025-12"
     assert all(name in result["core_conclusion"] for name in ("营业收入", "毛利率", "营业利润"))
     assert "毛利率 在 2024-01 至 2025-12 呈稳定趋势，从 0.29 到 0.29" in result["core_conclusion"]
     assert "2025-03" in result["core_conclusion"]
     assert "9999" not in result["core_conclusion"]
-    assert {item["label"] for item in result["key_metrics"]} >= {"营业收入", "毛利率", "营业利润"}
+    assert {item["label"] for item in result["key_metrics"]} >= set(plan.metric_columns)
     assert result["charts"]
     chart = (tmp_path / result["charts"][0]["path"]).read_text(encoding="utf-8")
     assert all(name.encode("unicode_escape").decode("ascii") in chart for name in ("营业收入", "毛利率", "营业利润", "异常"))
+
+
+def test_multi_metric_answer_reports_no_month_above_anomaly_threshold(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-12", freq="M").astype(str),
+            "营业收入": [100 + index * 2 for index in range(12)],
+            "毛利额": [30 + index * 0.6 for index in range(12)],
+            "营业利润": [15 + index * 0.3 for index in range(12)],
+        }
+    )
+
+    result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-12 的营业收入、毛利率和营业利润趋势，指出异常月份", tmp_path)
+
+    anomaly_items = next(section["items"] for section in result["sections"] if section["title"] == "异常对象")
+    assert anomaly_items == [{"text": "未识别到超过阈值的异常月份。"}]
+
+
+def test_multi_metric_explanation_reflects_same_direction_margin_change(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03", "2025-04"],
+            "营业收入": [100, 101, 102, 129.54],
+            "毛利额": [30, 30.3, 30.6, 39.02],
+            "营业利润": [15, 15.1, 15.2, 19.38],
+        }
+    )
+
+    result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-04 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因", tmp_path)
+
+    assert "2025-04 的指标联动显示：营业收入 环比上升 27.0%、毛利率 环比上升 0.4%、营业利润 环比上升 27.5%" in result["core_conclusion"]
+    assert "三项同向，毛利率稳定或略升" in result["core_conclusion"]
+    assert "未同向" not in result["core_conclusion"] and "毛利率下滑" not in result["core_conclusion"]
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():
