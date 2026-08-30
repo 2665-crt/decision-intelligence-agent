@@ -19,6 +19,7 @@ DIMENSION_KEYWORDS = ("region", "area", "product", "business", "customer", "åœ°å
 
 @dataclass(frozen=True)
 class QuestionPlan:
+    objective: str
     types: tuple[str, ...]
     time_column: str | None
     metric_column: str | None
@@ -46,7 +47,7 @@ def plan_question(frame: pd.DataFrame, objective: str) -> QuestionPlan:
     dimension_column = _match(columns, DIMENSION_KEYWORDS)
     if dimension_column is None:
         dimension_column = next((column for column in columns if column != time_column and column != metric_column and frame[column].dtype == "object"), None)
-    return QuestionPlan(types, time_column, metric_column, dimension_column, session_title(objective))
+    return QuestionPlan(objective, types, time_column, metric_column, dimension_column, session_title(objective))
 
 
 def _match(columns: list[str], keywords: tuple[str, ...]) -> str | None:

@@ -109,11 +109,18 @@ def _largest_anomaly(series: pd.DataFrame) -> dict | None:
 
 
 def _business_risks(summaries: list[dict], plan: QuestionPlan) -> list[dict]:
+    if not _needs_business_risk(plan):
+        return []
     declines = sorted((item for item in summaries if item["change_pct"] < -3), key=lambda item: item["change_pct"])
     if not declines and "risk" in plan.types and summaries:
         lowest = min(summaries, key=lambda item: item["change_pct"])
         declines = [lowest]
     return [{"title": f"{item['object']} 持续营收下降" if item["change_pct"] < -3 else f"{item['object']} 风险最低", "object": item["object"], "level": "high" if item["change_pct"] <= -15 else "medium" if item["change_pct"] < -3 else "low", "evidence": [f"{item['period_start']} 至 {item['period_end']} 从 {_number(item['first'])} {'下降' if item['change_pct'] < 0 else '上升'}至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"], "reason": "收入指标在连续观测期内变化；当前数据未包含客户、价格或产品结构字段，不能归因于单一业务因素。", "mitigation": f"继续跟踪 {item['object']} 的客户、销量和价格拆分，及时识别方向反转。", "human_review_required": False} for item in declines[:3]]
+
+
+def _needs_business_risk(plan: QuestionPlan) -> bool:
+    downside_terms = ("下降", "下滑", "最差", "风险")
+    return bool({"trend", "anomaly", "risk"}.intersection(plan.types)) or any(term in plan.objective.lower() for term in downside_terms)
 
 
 def _forecast(series: pd.DataFrame, plan: QuestionPlan) -> dict | None:

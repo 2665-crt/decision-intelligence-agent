@@ -245,3 +245,11 @@ def test_forecast_question_with_sufficient_history_returns_a_numeric_interval():
 
     assert len(intervals) == 3
     assert all(item["lower"] <= item["value"] <= item["upper"] for item in intervals)
+
+
+def test_best_performing_region_question_answers_the_leader_not_the_largest_decline():
+    result = analyse_uploaded("哪个地区表现最好？")
+
+    assert "north" in result["core_conclusion"].lower()
+    assert "south" not in result["core_conclusion"].lower()
+    assert "地区排名" in [section["title"] for section in result["sections"]]
