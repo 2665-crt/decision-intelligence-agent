@@ -24,7 +24,7 @@ def make_sales_workbook() -> bytes:
     return buffer.getvalue()
 
 
-def make_regional_revenue_workbook() -> bytes:
+def make_regional_revenue_workbook(missing_south_march: bool = False) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "regional revenue"
@@ -33,18 +33,18 @@ def make_regional_revenue_workbook() -> bytes:
     south = [155, 150, 145, 137, 128, 118, 108, 98, 90, 84, 79, 74]
     east = [112, 115, 118, 92, 116, 119, 122, 121, 124, 127, 130, 133]
     for month in range(1, 13):
-        for region, revenue in (("north", north[month - 1]), ("south", south[month - 1]), ("east", east[month - 1])):
+        for region, revenue in (("north", north[month - 1]), ("south", None if missing_south_march and month == 3 else south[month - 1]), ("east", east[month - 1])):
             sheet.append([f"2025-{month:02d}-01", region, revenue])
     buffer = BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
 
 
-def analyse_uploaded(objective: str) -> dict:
+def analyse_uploaded(objective: str, missing_south_march: bool = False) -> dict:
     create = client.post(
         "/api/jobs",
         data={"objective": objective},
-        files={"file": ("regional.xlsx", make_regional_revenue_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={"file": ("regional.xlsx", make_regional_revenue_workbook(missing_south_march), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     assert create.status_code == 201
     result = client.post(f"/api/jobs/{create.json()['id']}/analyze")
@@ -224,3 +224,24 @@ def test_forecast_returns_interval_or_explains_missing_time_series_conditions():
     result = analyse_uploaded("预测未来营收")
 
     assert result["forecast"]["prediction_interval_80"] or result["forecast"]["limitations"]
+
+
+def test_quality_metadata_cannot_become_the_core_answer():
+    result = analyse_uploaded("检测地区营收异常风险")
+
+    assert result["core_conclusion"] != result["data_quality"]["summary"]
+    assert result["business_risks"][0]["title"] != "数据质量风险"
+
+
+def test_missing_month_that_affects_south_is_named_as_a_limited_month():
+    result = analyse_uploaded("分析地区营收趋势", missing_south_march=True)
+
+    assert any("south" in item.lower() and "2025-03" in item for item in result["data_quality"]["limitations"])
+
+
+def test_forecast_question_with_sufficient_history_returns_a_numeric_interval():
+    result = analyse_uploaded("预测未来营收")
+    intervals = result["forecast"]["prediction_interval_80"]
+
+    assert len(intervals) == 3
+    assert all(item["lower"] <= item["value"] <= item["upper"] for item in intervals)

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { App, ResultPanel, TaskTabs } from "../src/App";
+import "../src/styles.css";
 
 afterEach(cleanup);
 
@@ -60,4 +61,7 @@ test("keeps task tabs readable, scrollable and switchable", () => {
   fireEvent.click(screen.getByRole("button", { name: "全部任务" }));
   fireEvent.click(screen.getByRole("button", { name: "月度营收预测" }));
   expect(selectSession).toHaveBeenCalledWith("forecast-session");
+  expect(getComputedStyle(activeTab).minWidth).toBe("120px");
+  expect(getComputedStyle(activeTab).maxWidth).toBe("220px");
+  expect(getComputedStyle(activeTab.querySelector(".tab-title")!).textOverflow).toBe("ellipsis");
 });

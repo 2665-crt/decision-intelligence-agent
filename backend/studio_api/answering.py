@@ -191,7 +191,13 @@ def _analysis_limitations(plan: QuestionPlan, forecast: dict | None) -> list[str
 def _quality_limitations(frame: pd.DataFrame, plan: QuestionPlan, quality: dict) -> list[str]:
     limitations = []
     if plan.metric_column and int(frame[plan.metric_column].isna().sum()):
-        limitations.append(f"{plan.metric_column} 有 {int(frame[plan.metric_column].isna().sum())} 个缺失值，涉及这些记录的变化幅度不能可靠比较。")
+        missing = frame.loc[frame[plan.metric_column].isna()]
+        if plan.dimension_column and plan.time_column:
+            for _, row in missing[[plan.dimension_column, plan.time_column]].iterrows():
+                period = _period(pd.to_datetime(row[plan.time_column], errors="coerce"))
+                limitations.append(f"{row[plan.dimension_column]} 的 {period} {plan.metric_column} 缺失，不能可靠判断该对象该月的实际水平。")
+        else:
+            limitations.append(f"{plan.metric_column} 有 {int(frame[plan.metric_column].isna().sum())} 个缺失值，涉及这些记录的变化幅度不能可靠比较。")
     if quality["duplicate_rows"]:
         limitations.append(f"存在 {quality['duplicate_rows']} 行重复记录，汇总前应确认是否代表重复业务。")
     return limitations
