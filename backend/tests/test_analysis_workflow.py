@@ -181,9 +181,22 @@ def test_semantic_session_titles_are_short_and_duplicates_are_numbered():
     second = client.post("/api/sessions", json={"dataset_id": dataset_id, "objective": objective})
 
     assert first.status_code == 201
-    assert first.json()["title"] == "地区营收风险"
+    assert first.json()["title"].startswith("地区营收风险")
     assert second.status_code == 201
-    assert second.json()["title"] == "地区营收风险 · 2"
+    assert second.json()["title"].startswith("地区营收风险 ·")
+    assert first.json()["title"] != second.json()["title"]
+
+
+def test_same_question_uses_a_unique_title_across_datasets():
+    first_dataset = client.post("/api/datasets", files={"file": ("first.xlsx", make_sales_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}).json()
+    second_dataset = client.post("/api/datasets", files={"file": ("second.xlsx", make_sales_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}).json()
+    objective = "检测地区营收异常风险"
+
+    first = client.post("/api/sessions", json={"dataset_id": first_dataset["id"], "objective": objective})
+    second = client.post("/api/sessions", json={"dataset_id": second_dataset["id"], "objective": objective})
+
+    assert first.json()["title"] != second.json()["title"]
+    assert second.json()["title"].startswith("地区营收风险 ·")
 
 
 def test_question_plan_recognises_region_revenue_risk_request():
@@ -199,6 +212,15 @@ def test_question_plan_recognises_region_revenue_risk_request():
 
     assert set(plan.types) == {"anomaly", "risk", "forecast"}
     assert (plan.time_column, plan.metric_column, plan.dimension_column) == ("month", "revenue", "region")
+
+
+def test_question_plan_prefers_the_requested_gmv_metric_over_identifier_columns():
+    frame = pd.DataFrame({"month": ["2025-01", "2025-02"], "region": ["north", "south"], "order_id": [1, 2], "GMV": [100, 80]})
+
+    plan = plan_question(frame, "分析GMV趋势")
+
+    assert plan.metric_column == "GMV"
+    assert plan.title == "GMV趋势"
 
 
 def test_region_revenue_risk_answers_with_object_numbers_and_chart():
@@ -253,3 +275,36 @@ def test_best_performing_region_question_answers_the_leader_not_the_largest_decl
     assert "north" in result["core_conclusion"].lower()
     assert "south" not in result["core_conclusion"].lower()
     assert "地区排名" in [section["title"] for section in result["sections"]]
+
+
+def test_anomaly_and_forecast_charts_expose_their_decision_evidence():
+    anomaly = analyse_uploaded("检测地区营收异常风险")
+    forecast = analyse_uploaded("预测未来营收")
+
+    anomaly_html = client.get(anomaly["charts"][0]["download_url"]).text
+    forecast_html = client.get(forecast["charts"][0]["download_url"]).text
+    assert "\\u5f02\\u5e38\\u70b9" in anomaly_html
+    assert "80% \\u9884\\u6d4b\\u533a\\u95f4" in forecast_html
+
+
+def test_future_decline_question_triggers_forecast_and_names_the_at_risk_object():
+    result = analyse_uploaded("哪些地区未来可能继续下滑")
+
+    assert "forecast" in result["analysis"]["plan"]["types"]
+    assert "south" in result["core_conclusion"].lower()
+    assert result["forecast"]["prediction_interval_80"]
+
+
+def test_non_numeric_dataset_returns_a_clear_inability_answer_not_an_internal_error():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["month", "region", "comment"])
+    sheet.append(["2025-01", "south", "missing revenue"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    create = client.post("/api/jobs", data={"objective": "分析地区营收趋势"}, files={"file": ("text.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+
+    response = client.post(f"/api/jobs/{create.json()['id']}/analyze")
+
+    assert response.status_code == 200
+    assert "未找到可用于计算的数值指标" in response.json()["core_conclusion"]

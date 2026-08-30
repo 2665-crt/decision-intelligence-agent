@@ -69,7 +69,7 @@ def create_session_endpoint(payload: dict) -> dict:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="数据集不存在") from exc
     base_title = str(payload.get("title", "")).strip() or session_title(objective)
-    return create_session(dataset, objective, unique_session_title(dataset_id, base_title))
+    return create_session(dataset, objective, unique_session_title(base_title))
 
 
 @app.get("/api/sessions")
@@ -106,7 +106,7 @@ def copy_session(session_id: str) -> dict:
         dataset = load_dataset(original["dataset_id"])
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="分析任务不存在") from exc
-    copied = create_session(dataset, original["objective"], unique_session_title(dataset["id"], session_title(original["objective"])))
+    copied = create_session(dataset, original["objective"], unique_session_title(session_title(original["objective"])))
     copied["messages"] = []
     save_session(copied)
     return copied

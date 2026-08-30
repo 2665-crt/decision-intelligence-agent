@@ -95,8 +95,8 @@ def create_session(dataset: dict, objective: str, title: str) -> dict:
     return session
 
 
-def unique_session_title(dataset_id: str, base_title: str) -> str:
-    titles = {item["title"] for item in list_sessions(dataset_id)}
+def unique_session_title(base_title: str) -> str:
+    titles = {item["title"] for item in list_sessions()}
     if base_title not in titles:
         return base_title
     number = 2

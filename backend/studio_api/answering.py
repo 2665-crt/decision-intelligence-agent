@@ -21,7 +21,8 @@ def analyse_spreadsheet(frame: pd.DataFrame, objective: str, directory: Path) ->
 
 def build_question_answer(frame: pd.DataFrame, plan: QuestionPlan, directory: Path) -> dict:
     quality = _quality(frame)
-    series = _series_by_dimension(frame, plan)
+    analysis_frame = frame.drop_duplicates().copy()
+    series = _series_by_dimension(analysis_frame, plan)
     summaries = _dimension_summaries(series)
     anomaly = _largest_anomaly(series)
     forecast = _forecast(series, plan)
@@ -30,9 +31,11 @@ def build_question_answer(frame: pd.DataFrame, plan: QuestionPlan, directory: Pa
     limitations = _analysis_limitations(plan, forecast)
     data_quality = {**quality, "summary": f"{quality['rows']} 行、{quality['columns']} 列；缺失 {quality['missing_cells']} 个单元格，重复 {quality['duplicate_rows']} 行。", "limitations": _quality_limitations(frame, plan, quality)}
     core_conclusion = _core_conclusion(summaries, anomaly, forecast, business_risks, limitations, plan)
+    if data_quality["limitations"]:
+        core_conclusion += f" 数据限制：{data_quality['limitations'][0]}"
     charts = _charts(series, plan, forecast, directory)
     answer = {
-        "analysis": {"kind": "question_driven_spreadsheet_analysis", "numeric_summary": _numeric_summary(frame), "quality": quality, "plan": {"types": list(plan.types), "time_column": plan.time_column, "metric_column": plan.metric_column, "dimension_column": plan.dimension_column}},
+        "analysis": {"kind": "question_driven_spreadsheet_analysis", "numeric_summary": _numeric_summary(analysis_frame), "quality": quality, "plan": {"types": list(plan.types), "time_column": plan.time_column, "metric_column": plan.metric_column, "dimension_column": plan.dimension_column}},
         "core_conclusion": core_conclusion,
         "key_metrics": _key_metrics(summaries, anomaly, forecast, business_risks),
         "sections": sections,
@@ -50,6 +53,8 @@ def build_question_answer(frame: pd.DataFrame, plan: QuestionPlan, directory: Pa
 def validate_answer_completeness(answer: dict, plan: QuestionPlan) -> list[str]:
     missing = []
     conclusion = answer.get("core_conclusion", "")
+    if plan.metric_column is None:
+        return [] if conclusion else ["缺少无法分析原因"]
     if not conclusion or not any(char.isdigit() for char in conclusion):
         missing.append("核心结论必须直接回答问题并包含实际数据")
     titles = {section["title"] for section in answer.get("sections", [])}
@@ -115,7 +120,7 @@ def _business_risks(summaries: list[dict], plan: QuestionPlan) -> list[dict]:
     if not declines and "risk" in plan.types and summaries:
         lowest = min(summaries, key=lambda item: item["change_pct"])
         declines = [lowest]
-    return [{"title": f"{item['object']} 持续营收下降" if item["change_pct"] < -3 else f"{item['object']} 风险最低", "object": item["object"], "level": "high" if item["change_pct"] <= -15 else "medium" if item["change_pct"] < -3 else "low", "evidence": [f"{item['period_start']} 至 {item['period_end']} 从 {_number(item['first'])} {'下降' if item['change_pct'] < 0 else '上升'}至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"], "reason": "收入指标在连续观测期内变化；当前数据未包含客户、价格或产品结构字段，不能归因于单一业务因素。", "mitigation": f"继续跟踪 {item['object']} 的客户、销量和价格拆分，及时识别方向反转。", "human_review_required": False} for item in declines[:3]]
+    return [{"title": f"{item['object']} 持续{plan.metric_column}下降" if item["change_pct"] < -3 else f"{item['object']} 风险最低", "object": item["object"], "level": "high" if item["change_pct"] <= -15 else "medium" if item["change_pct"] < -3 else "low", "evidence": [f"{item['period_start']} 至 {item['period_end']} 从 {_number(item['first'])} {'下降' if item['change_pct'] < 0 else '上升'}至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"], "reason": f"{plan.metric_column} 在连续观测期内变化；当前数据未包含客户、价格或产品结构字段，不能归因于单一业务因素。", "mitigation": f"继续跟踪 {item['object']} 的客户、销量和价格拆分，及时识别方向反转。", "human_review_required": False} for item in declines[:3]]
 
 
 def _needs_business_risk(plan: QuestionPlan) -> bool:
@@ -148,7 +153,7 @@ def _sections(plan: QuestionPlan, summaries: list[dict], anomaly: dict | None, f
         sections.append({"title": "趋势分析", "items": [{"text": f"{item['object']} 在 {item['period_start']} 至 {item['period_end']} 呈{item['direction']}趋势：{_number(item['first'])} 至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]})
     if "anomaly" in plan.types and anomaly:
         direction = "下降" if anomaly["change_pct"] < 0 else "上升"
-        sections.extend([{"title": "异常对象", "items": [{"text": f"{anomaly['object']} 是变化幅度最大的对象。"}]}, {"title": "异常时间", "items": [{"text": f"异常发生在 {anomaly['period']}。"}]}, {"title": "异常幅度", "items": [{"text": f"{anomaly['object']} 当期营收为 {_number(anomaly['value'])}，环比{direction} {abs(anomaly['change_pct']):.1f}%。"}]}])
+        sections.extend([{"title": "异常对象", "items": [{"text": f"{anomaly['object']} 是变化幅度最大的对象。"}]}, {"title": "异常时间", "items": [{"text": f"异常发生在 {anomaly['period']}。"}]}, {"title": "异常幅度", "items": [{"text": f"{anomaly['object']} 当期 {plan.metric_column} 为 {_number(anomaly['value'])}，环比{direction} {abs(anomaly['change_pct']):.1f}%。"}]}])
     if "ranking" in plan.types:
         ranked = sorted(summaries, key=lambda item: item["last"], reverse=True)
         sections.append({"title": "地区排名" if plan.dimension_column else "指标排名", "items": [{"text": f"{index + 1}. {item['object']}：最新值 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for index, item in enumerate(ranked)]})
@@ -206,7 +211,7 @@ def _quality_limitations(frame: pd.DataFrame, plan: QuestionPlan, quality: dict)
         else:
             limitations.append(f"{plan.metric_column} 有 {int(frame[plan.metric_column].isna().sum())} 个缺失值，涉及这些记录的变化幅度不能可靠比较。")
     if quality["duplicate_rows"]:
-        limitations.append(f"存在 {quality['duplicate_rows']} 行重复记录，汇总前应确认是否代表重复业务。")
+        limitations.append(f"存在 {quality['duplicate_rows']} 行重复记录，已从汇总计算中排除，需确认是否代表重复业务。")
     return limitations
 
 
@@ -218,13 +223,21 @@ def _charts(series: pd.DataFrame, plan: QuestionPlan, forecast: dict | None, dir
     if "forecast" in plan.types and forecast and forecast["prediction_interval_80"]:
         aggregate = series.groupby("period", as_index=False)["value"].sum()
         figure = go.Figure([go.Scatter(x=aggregate["period"], y=aggregate["value"], mode="lines+markers", name="历史")])
-        figure.add_trace(go.Scatter(x=pd.date_range(aggregate["period"].max(), periods=len(forecast["prediction_interval_80"]) + 1, freq="MS")[1:], y=[item["value"] for item in forecast["prediction_interval_80"]], mode="lines+markers", name="预测"))
+        future_periods = pd.date_range(aggregate["period"].max(), periods=len(forecast["prediction_interval_80"]) + 1, freq="MS")[1:]
+        figure.add_trace(go.Scatter(x=future_periods, y=[item["value"] for item in forecast["prediction_interval_80"]], mode="lines+markers", name="预测"))
+        figure.add_trace(go.Scatter(x=future_periods, y=[item["upper"] for item in forecast["prediction_interval_80"]], mode="lines", line={"width": 0}, showlegend=False, hoverinfo="skip"))
+        figure.add_trace(go.Scatter(x=future_periods, y=[item["lower"] for item in forecast["prediction_interval_80"]], mode="lines", fill="tonexty", fillcolor="rgba(23, 131, 113, .18)", line={"width": 0}, name="80% 预测区间"))
         figure.update_layout(title="历史趋势与预测区间")
-        title = "营收预测"
+        title = f"{plan.metric_column}预测"
     elif plan.dimension_column:
-        figure, title = px.line(series, x="period", y="value", color="object", markers=True, title="对象营收趋势"), "地区营收趋势"
+        figure, title = px.line(series, x="period", y="value", color="object", markers=True, title=f"对象{plan.metric_column}趋势"), f"地区{plan.metric_column}趋势"
     else:
         figure, title = px.line(series, x="period", y="value", markers=True, title="指标趋势"), "指标趋势"
+    if "anomaly" in plan.types:
+        anomaly = _largest_anomaly(series)
+        if anomaly:
+            point = series.loc[(series["object"] == anomaly["object"]) & (series["period"].astype(str).str.startswith(anomaly["period"]))]
+            figure.add_trace(go.Scatter(x=point["period"], y=point["value"], mode="markers", marker={"color": "#c5443d", "size": 12, "symbol": "x"}, name="异常点"))
     figure.write_html(chart_path, include_plotlyjs="cdn")
     return [{"title": title, "path": "charts/core-analysis.html", "download_url": "/api/jobs/{job_id}/files/charts/core-analysis.html"}]
 
