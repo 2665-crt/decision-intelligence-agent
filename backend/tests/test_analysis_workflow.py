@@ -24,6 +24,34 @@ def make_sales_workbook() -> bytes:
     return buffer.getvalue()
 
 
+def make_regional_revenue_workbook() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "regional revenue"
+    sheet.append(["month", "region", "revenue"])
+    north = [100, 103, 107, 110, 113, 116, 120, 123, 126, 130, 134, 138]
+    south = [155, 150, 145, 137, 128, 118, 108, 98, 90, 84, 79, 74]
+    east = [112, 115, 118, 92, 116, 119, 122, 121, 124, 127, 130, 133]
+    for month in range(1, 13):
+        for region, revenue in (("north", north[month - 1]), ("south", south[month - 1]), ("east", east[month - 1])):
+            sheet.append([f"2025-{month:02d}-01", region, revenue])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def analyse_uploaded(objective: str) -> dict:
+    create = client.post(
+        "/api/jobs",
+        data={"objective": objective},
+        files={"file": ("regional.xlsx", make_regional_revenue_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert create.status_code == 201
+    result = client.post(f"/api/jobs/{create.json()['id']}/analyze")
+    assert result.status_code == 200
+    return result.json()
+
+
 def test_excel_job_produces_analysis_risks_charts_and_reports():
     create = client.post(
         "/api/jobs",
@@ -166,3 +194,28 @@ def test_question_plan_recognises_region_revenue_risk_request():
 
     assert set(plan.types) == {"anomaly", "risk", "forecast"}
     assert (plan.time_column, plan.metric_column, plan.dimension_column) == ("month", "revenue", "region")
+
+
+def test_region_revenue_risk_answers_with_object_numbers_and_chart():
+    result = analyse_uploaded("检测地区营收异常风险")
+
+    assert "south" in result["core_conclusion"].lower()
+    assert any(char.isdigit() for char in result["core_conclusion"])
+    assert result["business_risks"][0]["object"] == "south"
+    assert result["business_risks"][0]["level"] == "high"
+    assert result["charts"]
+
+
+def test_trend_and_anomaly_sections_include_direction_object_and_magnitude():
+    result = analyse_uploaded("分析月度营收趋势，找出下降最严重地区和异常月份")
+
+    headings = [section["title"] for section in result["sections"]]
+    assert "趋势分析" in headings
+    assert "异常对象" in headings
+    assert any("下降" in item["text"] and "%" in item["text"] for section in result["sections"] for item in section["items"])
+
+
+def test_forecast_returns_interval_or_explains_missing_time_series_conditions():
+    result = analyse_uploaded("预测未来营收")
+
+    assert result["forecast"]["prediction_interval_80"] or result["forecast"]["limitations"]
