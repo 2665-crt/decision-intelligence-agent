@@ -95,6 +95,16 @@ def create_session(dataset: dict, objective: str, title: str) -> dict:
     return session
 
 
+def unique_session_title(dataset_id: str, base_title: str) -> str:
+    titles = {item["title"] for item in list_sessions(dataset_id)}
+    if base_title not in titles:
+        return base_title
+    number = 2
+    while f"{base_title} · {number}" in titles:
+        number += 1
+    return f"{base_title} · {number}"
+
+
 def save_session(session: dict) -> None:
     session["updated_at"] = now()
     directory = session_dir(session["id"])

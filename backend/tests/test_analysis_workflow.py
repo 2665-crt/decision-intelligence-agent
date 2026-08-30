@@ -1,10 +1,12 @@
 from io import BytesIO
 
+import pandas as pd
 from docx import Document
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from studio_api.app import app
+from studio_api.questioning import plan_question
 
 
 client = TestClient(app)
@@ -132,3 +134,35 @@ def test_one_dataset_can_restore_independent_analysis_sessions():
     deleted = client.delete(f"/api/sessions/{copied.json()['id']}")
     assert deleted.status_code == 204
     assert client.get(f"/api/sessions/{copied.json()['id']}").status_code == 404
+
+
+def test_semantic_session_titles_are_short_and_duplicates_are_numbered():
+    dataset_response = client.post(
+        "/api/datasets",
+        files={"file": ("sales.xlsx", make_sales_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    dataset_id = dataset_response.json()["id"]
+    objective = "分析不同地区营收情况，检测异常地区并预测未来营收风险"
+
+    first = client.post("/api/sessions", json={"dataset_id": dataset_id, "objective": objective})
+    second = client.post("/api/sessions", json={"dataset_id": dataset_id, "objective": objective})
+
+    assert first.status_code == 201
+    assert first.json()["title"] == "地区营收风险"
+    assert second.status_code == 201
+    assert second.json()["title"] == "地区营收风险 · 2"
+
+
+def test_question_plan_recognises_region_revenue_risk_request():
+    frame = pd.DataFrame(
+        {
+            "month": ["2025-01", "2025-02"],
+            "region": ["north", "south"],
+            "revenue": [100, 80],
+        }
+    )
+
+    plan = plan_question(frame, "检测地区营收异常风险并预测未来风险")
+
+    assert set(plan.types) == {"anomaly", "risk", "forecast"}
+    assert (plan.time_column, plan.metric_column, plan.dimension_column) == ("month", "revenue", "region")

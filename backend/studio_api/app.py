@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 
 from .engine import run
 from .intake import inspect_file, supported
+from .questioning import session_title
 from .reporting import render
 from .store import (
     create_dataset,
@@ -23,6 +24,7 @@ from .store import (
     save_job,
     save_session,
     session_dir,
+    unique_session_title,
 )
 
 
@@ -33,11 +35,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allo
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
-
-
-def session_title(objective: str) -> str:
-    clean = objective.strip().replace("分析", "").replace("数据", "").strip("：:，,。 ")
-    return f"{clean[:20] or '新建'}分析"
 
 
 @app.post("/api/datasets", status_code=201)
@@ -71,7 +68,8 @@ def create_session_endpoint(payload: dict) -> dict:
         dataset = load_dataset(dataset_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="数据集不存在") from exc
-    return create_session(dataset, objective, str(payload.get("title", "")).strip() or session_title(objective))
+    base_title = str(payload.get("title", "")).strip() or session_title(objective)
+    return create_session(dataset, objective, unique_session_title(dataset_id, base_title))
 
 
 @app.get("/api/sessions")
@@ -108,7 +106,7 @@ def copy_session(session_id: str) -> dict:
         dataset = load_dataset(original["dataset_id"])
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="分析任务不存在") from exc
-    copied = create_session(dataset, original["objective"], f"{original['title']} 副本")
+    copied = create_session(dataset, original["objective"], unique_session_title(dataset["id"], session_title(original["objective"])))
     copied["messages"] = []
     save_session(copied)
     return copied
