@@ -206,7 +206,7 @@ def _financial_metric_item(items: list[dict], metric: str) -> dict | None:
 
 def _linked_metric_changes(series: pd.DataFrame, period: str, metric_columns: tuple[str, ...]) -> str:
     changes = _linked_metric_change_values(series, period)
-    return "、".join(f"{metric} 环比{'下降' if changes[metric] < 0 else '上升'} {abs(changes[metric]):.1f}%" for metric in metric_columns if metric in changes)
+    return "、".join(f"{metric} 环比{_change_direction(changes[metric])} {_change_magnitude(changes[metric])}%" for metric in metric_columns if metric in changes)
 
 
 def _linked_metric_change_values(series: pd.DataFrame, period: str) -> dict[str, float]:
@@ -227,7 +227,7 @@ def _multi_metric_reason(series: pd.DataFrame, period: str, metric_columns: tupl
     profit = _financial_metric_change(changes, "营业利润")
     if revenue is None or margin is None or profit is None:
         return "数据未提供足够的同期指标，无法判断联动原因。"
-    margin_direction = "上升" if margin > 0.1 else "下降" if margin < -0.1 else "稳定"
+    margin_direction = _change_direction(margin)
     same_direction = (revenue >= 0 and profit >= 0) or (revenue <= 0 and profit <= 0)
     if same_direction and margin_direction == "上升":
         return "营业收入与营业利润同向，毛利率上升，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
@@ -240,6 +240,14 @@ def _multi_metric_reason(series: pd.DataFrame, period: str, metric_columns: tupl
 
 def _financial_metric_change(changes: dict[str, float], metric: str) -> float | None:
     return next((change for name, change in changes.items() if normalise_label(name) == metric), None)
+
+
+def _change_direction(change: float) -> str:
+    return "上升" if change > 0 else "下降" if change < 0 else "稳定"
+
+
+def _change_magnitude(change: float) -> str:
+    return f"{abs(change):.2f}" if 0 < abs(change) < 0.1 else f"{abs(change):.1f}"
 
 
 def _multi_metric_key_metrics(summaries: list[dict], anomalies: list[dict]) -> list[dict]:
