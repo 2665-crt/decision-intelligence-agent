@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from studio_api.app import app
+from studio_api.intake import read_spreadsheet
 from studio_api.questioning import plan_question
 
 
@@ -38,6 +39,25 @@ def make_regional_revenue_workbook(missing_south_march: bool = False) -> bytes:
     buffer = BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
+
+
+def write_financial_workbook(tmp_path):
+    workbook = Workbook()
+    cover = workbook.active
+    cover.title = "封面"
+    cover.append(["2025 年度经营分析"])
+
+    sheet = workbook.create_sheet("财务汇总")
+    sheet.append(["经营月报"])
+    sheet.append(["单位：万元"])
+    sheet.append([])
+    sheet.append(["期间", "营业收入", "毛利率", "营业利润"])
+    sheet.append(["2025-01", 100, 0.32, 15])
+    sheet.append(["2025-02", 120, 0.35, 18])
+
+    path = tmp_path / "financial.xlsx"
+    workbook.save(path)
+    return path
 
 
 def analyse_uploaded(objective: str, missing_south_march: bool = False) -> dict:
@@ -88,6 +108,14 @@ def test_excel_job_produces_analysis_risks_charts_and_reports():
     headings = [paragraph.text for paragraph in Document(BytesIO(report.content)).paragraphs]
     assert "核心结论" in headings
     assert "数据质量与分析限制" in headings
+
+
+def test_read_spreadsheet_selects_a_monthly_table_after_cover_rows(tmp_path):
+    frame = read_spreadsheet(write_financial_workbook(tmp_path))
+
+    assert frame.attrs["source_sheet"] == "财务汇总"
+    assert frame.attrs["header_row"] == 3
+    assert {"期间", "营业收入", "毛利率", "营业利润"} <= set(frame.columns)
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():
