@@ -34,13 +34,14 @@ test("prioritizes a direct answer and keeps data quality collapsed", () => {
     core_conclusion: "south 是当前风险最高的对象：2025-01 至 2025-12 从 155 下降至 74，累计下降 52.3%。",
     key_metrics: [{ label: "最高风险对象", value: "south", detail: "累计下降 52.3%" }],
     sections: [{ title: "风险评估", items: [{ text: "south 风险 high。" }] }],
-    business_risks: [{ title: "south 持续营收下降", object: "south", level: "high", evidence: ["累计下降 52.3%。"], mitigation: "核对客户和销量。" }],
+    business_risks: [{ title: "south 持续营收下降", object: "south", level: "high", evidence: ["累计下降 52.3%。"], reason: "收入指标连续下降，当前数据不能归因于单一业务因素。", mitigation: "核对客户和销量。" }],
     suggestions: [{ name: "优先处理 south", expected_benefit: "定位下降来源", cost: "中", potential_harm: "低", next_step: "核对数据" }],
     data_quality: { summary: "36 行、3 列；缺失 0 个单元格。", limitations: [] }, charts: [], reports: [], limitations: [],
   } as never} />);
 
   expect(screen.getByRole("heading", { name: "核心结论" })).toBeInTheDocument();
   expect(screen.getByText("south 是当前风险最高的对象", { exact: false })).toBeInTheDocument();
+  expect(screen.getByText("风险原因：收入指标连续下降，当前数据不能归因于单一业务因素。")).toBeInTheDocument();
   expect(screen.getByText("数据质量与分析限制").closest("details")).not.toHaveAttribute("open");
   expect(screen.queryByText("低损害方案")).not.toBeInTheDocument();
 });
