@@ -1,3 +1,4 @@
+from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
@@ -81,6 +82,26 @@ def write_workbook_with_repeated_detail_title(tmp_path):
     return path
 
 
+def write_workbook_with_date_and_text_only_sheet(tmp_path):
+    workbook = Workbook()
+    schedule = workbook.active
+    schedule.title = "日程说明"
+    schedule.append(["日期", "事项", "负责人", "备注"])
+    schedule.append([datetime(2025, 1, 1), "启动会", "张三", "完成"])
+    schedule.append([datetime(2025, 2, 1), "复盘会", "李四", "待定"])
+
+    sheet = workbook.create_sheet("月度收入")
+    sheet.append(["月度收入分析"])
+    sheet.append([])
+    sheet.append(["期间", "营业收入"])
+    sheet.append(["2025-01", 100])
+    sheet.append(["2025-02", 120])
+
+    path = tmp_path / "date-and-text.xlsx"
+    workbook.save(path)
+    return path
+
+
 def analyse_uploaded(objective: str, missing_south_march: bool = False) -> dict:
     create = client.post(
         "/api/jobs",
@@ -146,6 +167,13 @@ def test_read_spreadsheet_skips_repeated_merged_titles_for_valid_monthly_table(t
     assert frame.attrs["header_row"] == 3
     assert pd.to_datetime(frame["期间"], errors="coerce").notna().sum() == 2
     assert pd.to_numeric(frame["营业收入"], errors="coerce").notna().sum() == 2
+
+
+def test_read_spreadsheet_rejects_date_and_text_only_sheet_as_a_valid_table(tmp_path):
+    frame = read_spreadsheet(write_workbook_with_date_and_text_only_sheet(tmp_path))
+
+    assert frame.attrs["source_sheet"] == "月度收入"
+    assert "营业收入" in frame.columns
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():

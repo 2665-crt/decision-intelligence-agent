@@ -59,7 +59,7 @@ def _best_table(workbook: pd.ExcelFile) -> pd.DataFrame:
                 if not pd.api.types.is_numeric_dtype(frame[label])
                 and pd.to_datetime(frame[label], format="mixed", errors="coerce").notna().sum() >= 2
             ]
-            metric_columns = [label for label in labels if pd.to_numeric(frame[label], errors="coerce").notna().sum() >= 2]
+            metric_columns = [label for label in labels if label not in time_columns and pd.to_numeric(frame[label], errors="coerce").notna().sum() >= 2]
             valid_rows = pd.Series(False, index=frame.index)
             for time_column in time_columns:
                 for metric_column in metric_columns:
