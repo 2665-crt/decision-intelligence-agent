@@ -41,17 +41,39 @@ def _best_table(workbook: pd.ExcelFile) -> pd.DataFrame:
     candidates = []
     for sheet_name in workbook.sheet_names:
         raw = pd.read_excel(workbook, sheet_name=sheet_name, header=None)
-        for header_row in range(len(raw)):
+        for header_row in range(min(len(raw), 12)):
             header = raw.iloc[header_row]
             columns = [index for index, value in header.items() if isinstance(value, str) and value.strip()]
-            if len(columns) < 2:
+            labels = [str(header[index]).strip() for index in columns]
+            if len(labels) < 2 or len(labels) != len(set(labels)):
                 continue
             data = raw.iloc[header_row + 1 :, columns].dropna(how="all")
             if data.empty:
                 continue
-            labels = [str(header[index]).strip() for index in columns]
-            score = len(labels) * 10 + min(len(data), 9)
-            candidates.append((score, sheet_name, header_row, labels, data))
+            frame = data.copy()
+            frame.columns = labels
+            frame = frame.infer_objects(copy=False)
+            time_columns = [
+                label
+                for label in labels
+                if not pd.api.types.is_numeric_dtype(frame[label])
+                and pd.to_datetime(frame[label], format="mixed", errors="coerce").notna().sum() >= 2
+            ]
+            metric_columns = [label for label in labels if pd.to_numeric(frame[label], errors="coerce").notna().sum() >= 2]
+            valid_rows = pd.Series(False, index=frame.index)
+            for time_column in time_columns:
+                for metric_column in metric_columns:
+                    valid_rows |= pd.to_datetime(frame[time_column], format="mixed", errors="coerce").notna() & pd.to_numeric(frame[metric_column], errors="coerce").notna()
+            if not time_columns or not metric_columns or valid_rows.sum() < 2:
+                continue
+            score = len(labels) * 100 + len(time_columns) * 20 + len(metric_columns) * 20 + int(valid_rows.sum())
+            candidates.append((score, sheet_name, header_row, labels, frame))
+
+    if not candidates:
+        frame = pd.read_excel(workbook, sheet_name=workbook.sheet_names[0])
+        frame.attrs["source_sheet"] = workbook.sheet_names[0]
+        frame.attrs["header_row"] = 0
+        return frame
 
     _, sheet_name, header_row, labels, data = max(candidates, key=lambda candidate: candidate[0])
     frame = data.copy().infer_objects(copy=False)

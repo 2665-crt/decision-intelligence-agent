@@ -60,6 +60,27 @@ def write_financial_workbook(tmp_path):
     return path
 
 
+def write_workbook_with_repeated_detail_title(tmp_path):
+    workbook = Workbook()
+    detail = workbook.active
+    detail.title = "经营明细"
+    detail.append(["经营明细", "经营明细", "经营明细", "经营明细"])
+    detail.append(["说明", "说明", "说明", "说明"])
+    detail.append(["一", "二", "三", "四"])
+
+    sheet = workbook.create_sheet("月度财务")
+    sheet.append(["2025 年经营分析"])
+    sheet.append(["单位：万元"])
+    sheet.append([])
+    sheet.append(["期间", "营业收入", "毛利率", "营业利润"])
+    sheet.append(["2025-01", 100, 0.32, 15])
+    sheet.append(["2025-02", 120, 0.35, 18])
+
+    path = tmp_path / "monthly-financial.xlsx"
+    workbook.save(path)
+    return path
+
+
 def analyse_uploaded(objective: str, missing_south_march: bool = False) -> dict:
     create = client.post(
         "/api/jobs",
@@ -116,6 +137,15 @@ def test_read_spreadsheet_selects_a_monthly_table_after_cover_rows(tmp_path):
     assert frame.attrs["source_sheet"] == "财务汇总"
     assert frame.attrs["header_row"] == 3
     assert {"期间", "营业收入", "毛利率", "营业利润"} <= set(frame.columns)
+
+
+def test_read_spreadsheet_skips_repeated_merged_titles_for_valid_monthly_table(tmp_path):
+    frame = read_spreadsheet(write_workbook_with_repeated_detail_title(tmp_path))
+
+    assert frame.attrs["source_sheet"] == "月度财务"
+    assert frame.attrs["header_row"] == 3
+    assert pd.to_datetime(frame["期间"], errors="coerce").notna().sum() == 2
+    assert pd.to_numeric(frame["营业收入"], errors="coerce").notna().sum() == 2
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():
