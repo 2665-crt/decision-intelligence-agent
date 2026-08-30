@@ -247,7 +247,11 @@ def _change_direction(change: float) -> str:
 
 
 def _change_magnitude(change: float) -> str:
-    return f"{abs(change):.2f}" if 0 < abs(change) < 0.1 else f"{abs(change):.1f}"
+    magnitude = abs(change)
+    if magnitude == 0 or magnitude >= 0.1:
+        return f"{magnitude:.1f}"
+    precision = max(2, int(np.ceil(-np.log10(magnitude))))
+    return f"{magnitude:.{precision}f}"
 
 
 def _multi_metric_key_metrics(summaries: list[dict], anomalies: list[dict]) -> list[dict]:

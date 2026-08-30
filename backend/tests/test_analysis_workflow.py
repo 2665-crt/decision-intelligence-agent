@@ -290,6 +290,24 @@ def test_multi_metric_explanation_preserves_a_small_declining_margin(tmp_path):
     assert "毛利率稳定" not in result["core_conclusion"]
 
 
+def test_multi_metric_explanation_preserves_a_tiny_declining_margin(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03", "2025-04"],
+            "营业收入": [100, 101, 102, 129.54],
+            "毛利额": [30, 30.3, 30.6, 38.86044552],
+            "营业利润": [15, 15.1, 15.2, 19.38],
+        }
+    )
+
+    result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-04 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因", tmp_path)
+
+    assert "毛利率 环比下降 0.004%" in result["core_conclusion"]
+    assert "营业收入与营业利润同向，毛利率下降" in result["core_conclusion"]
+    assert "毛利率 环比下降 0.00%" not in result["core_conclusion"]
+    assert "毛利率稳定" not in result["core_conclusion"]
+
+
 def test_operating_profit_only_anomaly_has_a_possible_reason(tmp_path):
     frame = pd.DataFrame(
         {
