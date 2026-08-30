@@ -224,6 +224,32 @@ def test_financial_question_answers_all_requested_metrics_with_monthly_evidence(
     assert all(name.encode("unicode_escape").decode("ascii") in chart for name in ("营业收入", "毛利率", "营业利润", "异常"))
 
 
+def test_financial_anomaly_keeps_the_decline_and_grounds_its_reason_in_workbook_fields(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03", "2025-04"],
+            "销量（件）": [970, 1000, 841, 1068],
+            "含税单价（元）": [100, 100, 100, 100],
+            "营业收入（万元）": [97, 100, 84.1, 106.8],
+            "毛利（万元）": [29.1, 30, 25.23, 32.04],
+            "营业利润（万元）": [14.55, 15, 12.51, 15.95],
+            "备注": ["正常经营", "正常经营", "需求回落：销量下滑", "正常经营"],
+        }
+    )
+
+    result = analyse_spreadsheet(frame, "分析 2025-01 到 2025-04 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因", tmp_path)
+    anomaly_text = " ".join(item["text"] for section in result["sections"] if section["title"] == "异常对象" for item in section["items"])
+    answer_text = f"{result['core_conclusion']} {anomaly_text}"
+
+    assert "2025-03" in answer_text
+    assert "营业收入（万元）" in answer_text and "环比下降 15.9%" in answer_text
+    assert "营业利润（万元）" in answer_text and "环比下降 16.6%" in answer_text
+    assert "备注“需求回落：销量下滑”" in answer_text
+    assert "销量（件）从 1,000 到 841，环比下降 15.9%" in answer_text
+    assert "含税单价（元）从 100 到 100，环比稳定 0.0%" in answer_text
+    assert "数据未提供客户、价格或业务事件字段" not in answer_text
+
+
 def test_multi_metric_answer_reports_no_month_above_anomaly_threshold(tmp_path):
     frame = pd.DataFrame(
         {

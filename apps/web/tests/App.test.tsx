@@ -46,6 +46,17 @@ test("prioritizes a direct answer and keeps data quality collapsed", () => {
   expect(screen.queryByText("低损害方案")).not.toBeInTheDocument();
 });
 
+test("omits the business risk heading when the analysis has no business risks", () => {
+  render(<ResultPanel tab="结果" session={{
+    id: "trend-session", dataset_id: "dataset", source_name: "financial.xlsx", objective: "分析财务趋势", title: "财务趋势", status: "succeeded",
+    intake: { kind: "spreadsheet", rows: 4, columns: ["期间", "营业收入"] }, messages: [],
+    core_conclusion: "营业收入保持上升。", key_metrics: [], sections: [], business_risks: [], suggestions: [],
+    data_quality: { summary: "4 行、2 列；缺失 0 个单元格。", limitations: [] }, charts: [], reports: [], limitations: [],
+  } as never} />);
+
+  expect(screen.queryByRole("heading", { name: "业务风险" })).not.toBeInTheDocument();
+});
+
 test("keeps task tabs readable, scrollable and switchable", () => {
   const selectSession = vi.fn();
   render(<TaskTabs activeId="risk-session" onClose={vi.fn()} onNew={vi.fn()} onSelect={selectSession} sessions={[

@@ -60,13 +60,13 @@ def _build_multi_metric_answer(frame: pd.DataFrame, plan: QuestionPlan, director
     summaries = _metric_summaries(series)
     anomalies = _metric_anomalies(series)
     anomaly = _largest_metric_anomaly(anomalies)
-    sections = _multi_metric_sections(plan, series, summaries, anomalies)
+    sections = _multi_metric_sections(plan, analysis_frame, series, summaries, anomalies)
     data_quality = {
         **quality,
         "summary": f"{quality['rows']} 行、{quality['columns']} 列；缺失 {quality['missing_cells']} 个单元格，重复 {quality['duplicate_rows']} 行。",
         "limitations": _quality_limitations(frame, plan, quality),
     }
-    core_conclusion = _multi_metric_conclusion(plan, series, summaries, anomalies, data_quality["limitations"])
+    core_conclusion = _multi_metric_conclusion(plan, analysis_frame, series, summaries, anomalies, data_quality["limitations"])
     charts = _multi_metric_charts(series, anomalies, directory)
     answer = {
         "analysis": {
@@ -151,11 +151,21 @@ def _metric_anomalies(series: pd.DataFrame) -> list[dict]:
         changes = group.dropna(subset=["change_pct"])
         if changes.empty:
             continue
-        point = changes.loc[changes["change_pct"].abs().idxmax()]
-        threshold = max(10.0, float(changes["change_pct"].abs().median() + 2 * changes["change_pct"].abs().std(ddof=0)))
-        if abs(float(point["change_pct"])) < threshold:
-            continue
-        anomalies.append({"metric": metric, "period": _period(point["period"]), "value": float(point["value"]), "change_pct": round(float(point["change_pct"]), 1)})
+        candidate_indexes = {
+            directional.loc[directional["change_pct"].abs().idxmax()].name
+            for directional in (changes.loc[changes["change_pct"] < 0], changes.loc[changes["change_pct"] > 0])
+            if not directional.empty
+        }
+        baseline = changes.loc[~changes.index.isin(candidate_indexes), "change_pct"].abs()
+        if baseline.empty:
+            threshold = 10.0
+        else:
+            median = float(baseline.median())
+            threshold = max(10.0, median + 2 * float((baseline - median).abs().median()))
+        for index in sorted(candidate_indexes, key=lambda item: changes.loc[item, "period"]):
+            point = changes.loc[index]
+            if abs(float(point["change_pct"])) >= threshold:
+                anomalies.append({"metric": metric, "period": _period(point["period"]), "value": float(point["value"]), "change_pct": round(float(point["change_pct"]), 1)})
     return anomalies
 
 
@@ -163,38 +173,38 @@ def _largest_metric_anomaly(anomalies: list[dict]) -> dict | None:
     return max(anomalies, key=lambda item: abs(item["change_pct"])) if anomalies else None
 
 
-def _multi_metric_sections(plan: QuestionPlan, series: pd.DataFrame, summaries: list[dict], anomalies: list[dict]) -> list[dict]:
+def _multi_metric_sections(plan: QuestionPlan, frame: pd.DataFrame, series: pd.DataFrame, summaries: list[dict], anomalies: list[dict]) -> list[dict]:
     sections = []
     if "trend" in plan.types:
         sections.append({"title": "趋势分析", "items": [{"text": f"{item['metric']} 在 {item['period_start']} 至 {item['period_end']} 呈{item['direction']}趋势：{_number(item['first'])} 至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]})
     if "anomaly" in plan.types:
         items = []
         for item in anomalies:
-            text = f"{item['metric']} 的最大月度异常为 {item['period']}：当月 {_number(item['value'])}，环比{'下降' if item['change_pct'] < 0 else '上升'} {abs(item['change_pct']):.1f}%。"
-            text += f" 可能原因：{_multi_metric_reason(series, item['period'], plan.metric_columns)}"
+            text = f"{item['metric']} 的月度异常为 {item['period']}：当月 {_number(item['value'])}，环比{'下降' if item['change_pct'] < 0 else '上升'} {abs(item['change_pct']):.1f}%。"
+            text += f" 可能原因：{_multi_metric_reason(frame, series, item['period'], plan)}"
             items.append({"text": text})
         sections.append({"title": "异常对象", "items": items or [{"text": "未识别到超过阈值的异常月份。"}]})
     return sections or [{"title": "关键指标", "items": [{"text": f"{item['metric']} 最新值 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]}]
 
 
-def _multi_metric_conclusion(plan: QuestionPlan, series: pd.DataFrame, summaries: list[dict], anomalies: list[dict], quality_limitations: list[str]) -> str:
+def _multi_metric_conclusion(plan: QuestionPlan, frame: pd.DataFrame, series: pd.DataFrame, summaries: list[dict], anomalies: list[dict], quality_limitations: list[str]) -> str:
     summary_by_metric = {item["metric"]: item for item in summaries}
-    anomaly_by_metric = {item["metric"]: item for item in anomalies}
     statements = []
     for metric in plan.metric_columns:
         summary = summary_by_metric.get(metric)
         if summary is None:
             continue
         statement = f"{metric} 在 {summary['period_start']} 至 {summary['period_end']} 呈{summary['direction']}趋势，从 {_number(summary['first'])} 到 {_number(summary['last'])}，累计变化 {summary['change_pct']:.1f}%"
-        anomaly = anomaly_by_metric.get(metric)
-        if anomaly:
-            statement += f"；最大月度异常为 {anomaly['period']}，当月 {_number(anomaly['value'])}，环比{'下降' if anomaly['change_pct'] < 0 else '上升'} {abs(anomaly['change_pct']):.1f}%"
+        metric_anomalies = [item for item in anomalies if item["metric"] == metric]
+        for anomaly in metric_anomalies:
+            statement += f"；月度异常为 {anomaly['period']}，当月 {_number(anomaly['value'])}，环比{'下降' if anomaly['change_pct'] < 0 else '上升'} {abs(anomaly['change_pct']):.1f}%"
         statements.append(statement + "。")
-    revenue_anomaly = _financial_metric_item(anomalies, "营业收入")
-    if revenue_anomaly and all(_financial_metric_item(summaries, metric) for metric in ("营业收入", "毛利率", "营业利润")):
-        reason = _multi_metric_reason(series, revenue_anomaly["period"], plan.metric_columns)
+    revenue_anomalies = [item for item in anomalies if normalise_label(item["metric"]) == "营业收入"]
+    if revenue_anomalies and all(_financial_metric_item(summaries, metric) for metric in ("营业收入", "毛利率", "营业利润")):
+        reason_period = next((item["period"] for item in revenue_anomalies if item["change_pct"] < 0), revenue_anomalies[0]["period"])
+        reason = _multi_metric_reason(frame, series, reason_period, plan)
         if reason:
-            statements.append(f"{revenue_anomaly['period']} 的指标联动显示：{_linked_metric_changes(series, revenue_anomaly['period'], plan.metric_columns)}；{reason}")
+            statements.append(f"{reason_period} 的指标联动显示：{_linked_metric_changes(series, reason_period, plan.metric_columns)}；{reason}")
     if not statements:
         return "未找到可用于计算的数值指标，无法给出对象级结论。"
     return " ".join(statements)
@@ -220,7 +230,7 @@ def _linked_metric_change_values(series: pd.DataFrame, period: str) -> dict[str,
     return changes
 
 
-def _multi_metric_reason(series: pd.DataFrame, period: str, metric_columns: tuple[str, ...]) -> str:
+def _multi_metric_reason(frame: pd.DataFrame, series: pd.DataFrame, period: str, plan: QuestionPlan) -> str:
     changes = _linked_metric_change_values(series, period)
     revenue = _financial_metric_change(changes, "营业收入")
     margin = _financial_metric_change(changes, "毛利率")
@@ -230,12 +240,63 @@ def _multi_metric_reason(series: pd.DataFrame, period: str, metric_columns: tupl
     margin_direction = _change_direction(margin)
     same_direction = (revenue >= 0 and profit >= 0) or (revenue <= 0 and profit <= 0)
     if same_direction and margin_direction == "上升":
-        return "营业收入与营业利润同向，毛利率上升，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
-    if same_direction and margin_direction == "稳定":
-        return "营业收入与营业利润同向，毛利率稳定，收入规模变化主导营业利润变化的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
-    if same_direction:
-        return "营业收入与营业利润同向，毛利率下降，收入规模变化与盈利效率变化共同影响营业利润的可能性较高。数据未提供客户、价格或业务事件字段，不能进一步归因。"
-    return f"营业收入与营业利润反向，毛利率{margin_direction}，当前数据只能确认指标联动，不能进一步归因。"
+        reason = "营业收入与营业利润同向，毛利率上升，收入规模变化主导营业利润变化的可能性较高。"
+    elif same_direction and margin_direction == "稳定":
+        reason = "营业收入与营业利润同向，毛利率稳定，收入规模变化主导营业利润变化的可能性较高。"
+    elif same_direction:
+        reason = "营业收入与营业利润同向，毛利率下降，收入规模变化与盈利效率变化共同影响营业利润的可能性较高。"
+    else:
+        reason = f"营业收入与营业利润反向，毛利率{margin_direction}，当前数据只能确认指标联动。"
+    operational_evidence = _operational_evidence(frame, period, plan)
+    if operational_evidence:
+        return f"{reason} 工作簿证据：{'；'.join(operational_evidence)}。"
+    return f"{reason} 数据未提供销量、单价或备注字段，不能进一步归因。"
+
+
+def _operational_evidence(frame: pd.DataFrame, period: str, plan: QuestionPlan) -> list[str]:
+    if plan.time_column is None or plan.time_column not in frame.columns:
+        return []
+    working = frame.copy()
+    working["_period"] = pd.to_datetime(working[plan.time_column], errors="coerce").dt.to_period("M")
+    current_period = pd.Period(period, freq="M")
+    previous_period = current_period - 1
+    current = working.loc[working["_period"] == current_period]
+    previous = working.loc[working["_period"] == previous_period]
+    if current.empty or previous.empty:
+        return []
+
+    quantity_column = next((str(column) for column in frame.columns if normalise_label(str(column)) in {"销量", "销售量"}), None)
+    price_column = next((str(column) for column in frame.columns if "单价" in normalise_label(str(column))), None)
+    remark_column = next((str(column) for column in frame.columns if "备注" in normalise_label(str(column))), None)
+    evidence = []
+    if remark_column:
+        remarks = current[remark_column].dropna().astype(str).str.strip()
+        remarks = remarks.loc[remarks != ""]
+        if not remarks.empty:
+            evidence.append(f"{remark_column}“{remarks.value_counts().index[0]}”")
+    if quantity_column:
+        previous_quantity = float(pd.to_numeric(previous[quantity_column], errors="coerce").sum(min_count=1))
+        current_quantity = float(pd.to_numeric(current[quantity_column], errors="coerce").sum(min_count=1))
+        quantity_change = _percent_change(current_quantity, previous_quantity)
+        evidence.append(f"{quantity_column}从 {_number(previous_quantity)} 到 {_number(current_quantity)}，环比{_change_direction(quantity_change)} {_change_magnitude(quantity_change)}%")
+    if price_column:
+        previous_price = _period_unit_price(previous, price_column, quantity_column)
+        current_price = _period_unit_price(current, price_column, quantity_column)
+        if previous_price is not None and current_price is not None:
+            price_change = _percent_change(current_price, previous_price)
+            evidence.append(f"{price_column}从 {_number(previous_price)} 到 {_number(current_price)}，环比{_change_direction(price_change)} {_change_magnitude(price_change)}%")
+    return evidence
+
+
+def _period_unit_price(frame: pd.DataFrame, price_column: str, quantity_column: str | None) -> float | None:
+    prices = pd.to_numeric(frame[price_column], errors="coerce")
+    if quantity_column:
+        quantities = pd.to_numeric(frame[quantity_column], errors="coerce")
+        valid = prices.notna() & quantities.notna()
+        total_quantity = quantities.loc[valid].sum()
+        if total_quantity:
+            return float((prices.loc[valid] * quantities.loc[valid]).sum() / total_quantity)
+    return float(prices.mean()) if prices.notna().any() else None
 
 
 def _financial_metric_change(changes: dict[str, float], metric: str) -> float | None:
@@ -255,7 +316,7 @@ def _change_magnitude(change: float) -> str:
 
 
 def _multi_metric_key_metrics(summaries: list[dict], anomalies: list[dict]) -> list[dict]:
-    anomaly_by_metric = {item["metric"]: item for item in anomalies}
+    anomaly_by_metric = {item["metric"]: item for item in sorted(anomalies, key=lambda item: abs(item["change_pct"]))}
     return [{"label": item["metric"], "value": _number(item["last"]), "detail": f"{item['period_start']} 至 {item['period_end']} 累计{item['direction']} {abs(item['change_pct']):.1f}%；最大异常 {anomaly_by_metric[item['metric']]['period']} 环比 {anomaly_by_metric[item['metric']]['change_pct']:.1f}%" if item["metric"] in anomaly_by_metric else f"{item['period_start']} 至 {item['period_end']} 累计{item['direction']} {abs(item['change_pct']):.1f}%"} for item in summaries]
 
 
