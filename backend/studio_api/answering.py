@@ -20,6 +20,8 @@ def analyse_spreadsheet(frame: pd.DataFrame, objective: str, directory: Path) ->
 
 
 def build_question_answer(frame: pd.DataFrame, plan: QuestionPlan, directory: Path) -> dict:
+    if len(plan.metric_columns) > 1:
+        return _build_multi_metric_answer(frame, plan, directory)
     quality = _quality(frame)
     analysis_frame = frame.drop_duplicates().copy()
     series = _series_by_dimension(analysis_frame, plan)
@@ -50,6 +52,175 @@ def build_question_answer(frame: pd.DataFrame, plan: QuestionPlan, directory: Pa
     return answer | {"evidence": evidence, "risks": business_risks, "options": suggestions, "suggestions": suggestions}
 
 
+def _build_multi_metric_answer(frame: pd.DataFrame, plan: QuestionPlan, directory: Path) -> dict:
+    quality = _quality(frame)
+    analysis_frame = frame.drop_duplicates().copy()
+    series = _monthly_metric_series(analysis_frame, plan)
+    summaries = _metric_summaries(series)
+    anomalies = _metric_anomalies(series)
+    anomaly = _largest_metric_anomaly(anomalies)
+    sections = _multi_metric_sections(plan, summaries, anomalies)
+    data_quality = {
+        **quality,
+        "summary": f"{quality['rows']} 行、{quality['columns']} 列；缺失 {quality['missing_cells']} 个单元格，重复 {quality['duplicate_rows']} 行。",
+        "limitations": _quality_limitations(frame, plan, quality),
+    }
+    core_conclusion = _multi_metric_conclusion(plan, series, summaries, anomalies, data_quality["limitations"])
+    charts = _multi_metric_charts(series, anomalies, directory)
+    answer = {
+        "analysis": {
+            "kind": "question_driven_spreadsheet_analysis",
+            "numeric_summary": _numeric_summary(analysis_frame),
+            "quality": quality,
+            "plan": {
+                "types": list(plan.types),
+                "time_column": plan.time_column,
+                "metric_column": plan.metric_column,
+                "metric_columns": list(plan.metric_columns),
+                "dimension_column": plan.dimension_column,
+                "period_start": _period(plan.period_start) if plan.period_start is not None else None,
+                "period_end": _period(plan.period_end) if plan.period_end is not None else None,
+            },
+        },
+        "core_conclusion": core_conclusion,
+        "key_metrics": _multi_metric_key_metrics(summaries, anomalies),
+        "sections": sections,
+        "business_risks": [],
+        "data_quality": data_quality,
+        "charts": charts,
+        "forecast": None,
+        "limitations": [],
+    }
+    evidence = [{"level": "analysis", "summary": item["text"]} for section in sections for item in section["items"]]
+    suggestions = _suggestions([], anomaly)
+    return answer | {"evidence": evidence, "risks": [], "options": suggestions, "suggestions": suggestions}
+
+
+def _monthly_metric_series(frame: pd.DataFrame, plan: QuestionPlan) -> pd.DataFrame:
+    if plan.time_column is None:
+        return pd.DataFrame(columns=["period", "metric", "value"])
+    working = frame.copy()
+    working["period"] = pd.to_datetime(working[plan.time_column], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    working = working.dropna(subset=["period"])
+    if plan.period_start is not None:
+        working = working.loc[working["period"] >= plan.period_start]
+    if plan.period_end is not None:
+        working = working.loc[working["period"] <= plan.period_end]
+    series: list[pd.DataFrame] = []
+    for metric in plan.metric_columns:
+        if metric == "毛利率" and {"营业收入", "毛利额"} <= set(working.columns):
+            totals = working.assign(
+                _revenue=pd.to_numeric(working["营业收入"], errors="coerce"),
+                _gross_profit=pd.to_numeric(working["毛利额"], errors="coerce"),
+            ).groupby("period", as_index=False)[["_revenue", "_gross_profit"]].sum(min_count=1)
+            values = totals.assign(value=totals["_gross_profit"] / totals["_revenue"], metric=metric)[["period", "metric", "value"]]
+        elif metric in working.columns:
+            values = working.assign(value=pd.to_numeric(working[metric], errors="coerce")).dropna(subset=["value"]).groupby("period", as_index=False)["value"].sum()
+            values["metric"] = metric
+            values = values[["period", "metric", "value"]]
+        else:
+            continue
+        series.append(values.replace([np.inf, -np.inf], np.nan).dropna(subset=["value"]))
+    return pd.concat(series, ignore_index=True).sort_values(["metric", "period"]) if series else pd.DataFrame(columns=["period", "metric", "value"])
+
+
+def _metric_summaries(series: pd.DataFrame) -> list[dict]:
+    summaries = []
+    for metric, group in series.groupby("metric", sort=False):
+        group = group.sort_values("period")
+        if group.empty:
+            continue
+        first, last = float(group.iloc[0]["value"]), float(group.iloc[-1]["value"])
+        change = _percent_change(last, first)
+        summaries.append({"metric": metric, "first": first, "last": last, "change_pct": change, "direction": "上升" if change > 3 else "下降" if change < -3 else "稳定", "period_start": _period(group.iloc[0]["period"]), "period_end": _period(group.iloc[-1]["period"])})
+    return summaries
+
+
+def _metric_anomalies(series: pd.DataFrame) -> list[dict]:
+    anomalies = []
+    for metric, group in series.groupby("metric", sort=False):
+        group = group.sort_values("period").copy()
+        group["change_pct"] = group["value"].pct_change() * 100
+        changes = group.dropna(subset=["change_pct"])
+        if changes.empty:
+            continue
+        point = changes.loc[changes["change_pct"].abs().idxmax()]
+        threshold = max(10.0, float(changes["change_pct"].abs().median() + 2 * changes["change_pct"].abs().std(ddof=0)))
+        if abs(float(point["change_pct"])) < threshold:
+            continue
+        anomalies.append({"metric": metric, "period": _period(point["period"]), "value": float(point["value"]), "change_pct": round(float(point["change_pct"]), 1)})
+    return anomalies
+
+
+def _largest_metric_anomaly(anomalies: list[dict]) -> dict | None:
+    return max(anomalies, key=lambda item: abs(item["change_pct"])) if anomalies else None
+
+
+def _multi_metric_sections(plan: QuestionPlan, summaries: list[dict], anomalies: list[dict]) -> list[dict]:
+    sections = []
+    if "trend" in plan.types:
+        sections.append({"title": "趋势分析", "items": [{"text": f"{item['metric']} 在 {item['period_start']} 至 {item['period_end']} 呈{item['direction']}趋势：{_number(item['first'])} 至 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]})
+    if "anomaly" in plan.types:
+        sections.append({"title": "异常对象", "items": [{"text": f"{item['metric']} 的最大月度异常为 {item['period']}：当月 {_number(item['value'])}，环比{'下降' if item['change_pct'] < 0 else '上升'} {abs(item['change_pct']):.1f}%。"} for item in anomalies]})
+    return sections or [{"title": "关键指标", "items": [{"text": f"{item['metric']} 最新值 {_number(item['last'])}，累计变化 {item['change_pct']:.1f}%。"} for item in summaries]}]
+
+
+def _multi_metric_conclusion(plan: QuestionPlan, series: pd.DataFrame, summaries: list[dict], anomalies: list[dict], quality_limitations: list[str]) -> str:
+    summary_by_metric = {item["metric"]: item for item in summaries}
+    anomaly_by_metric = {item["metric"]: item for item in anomalies}
+    statements = []
+    for metric in plan.metric_columns:
+        summary = summary_by_metric.get(metric)
+        if summary is None:
+            continue
+        statement = f"{metric} 在 {summary['period_start']} 至 {summary['period_end']} 呈{summary['direction']}趋势，从 {_number(summary['first'])} 到 {_number(summary['last'])}，累计变化 {summary['change_pct']:.1f}%"
+        anomaly = anomaly_by_metric.get(metric)
+        if anomaly:
+            statement += f"；最大月度异常为 {anomaly['period']}，当月 {_number(anomaly['value'])}，环比{'下降' if anomaly['change_pct'] < 0 else '上升'} {abs(anomaly['change_pct']):.1f}%"
+        statements.append(statement + "。")
+    revenue_anomaly = anomaly_by_metric.get("营业收入")
+    if revenue_anomaly and {"营业收入", "毛利率", "营业利润"} <= set(summary_by_metric):
+        linked = _linked_metric_changes(series, revenue_anomaly["period"])
+        if linked:
+            statements.append(f"{revenue_anomaly['period']} 的指标联动显示：{linked}；收入变化与毛利率、营业利润未同向，说明收入规模变化未同步转化为利润，毛利率下滑是营业利润变化的可能数据层面原因。数据未提供客户、价格或业务事件字段，不能进一步归因。")
+    if not statements:
+        return "未找到可用于计算的数值指标，无法给出对象级结论。"
+    return " ".join(statements)
+
+
+def _linked_metric_changes(series: pd.DataFrame, period: str) -> str:
+    statements = []
+    for metric, group in series.groupby("metric", sort=False):
+        group = group.sort_values("period").copy()
+        group["change_pct"] = group["value"].pct_change() * 100
+        point = group.loc[group["period"].astype(str).str.startswith(period)]
+        if not point.empty and pd.notna(point.iloc[0]["change_pct"]):
+            change = float(point.iloc[0]["change_pct"])
+            statements.append(f"{metric} 环比{'下降' if change < 0 else '上升'} {abs(change):.1f}%")
+    return "、".join(statements)
+
+
+def _multi_metric_key_metrics(summaries: list[dict], anomalies: list[dict]) -> list[dict]:
+    anomaly_by_metric = {item["metric"]: item for item in anomalies}
+    return [{"label": item["metric"], "value": _number(item["last"]), "detail": f"{item['period_start']} 至 {item['period_end']} 累计{item['direction']} {abs(item['change_pct']):.1f}%；最大异常 {anomaly_by_metric[item['metric']]['period']} 环比 {anomaly_by_metric[item['metric']]['change_pct']:.1f}%" if item["metric"] in anomaly_by_metric else f"{item['period_start']} 至 {item['period_end']} 累计{item['direction']} {abs(item['change_pct']):.1f}%"} for item in summaries]
+
+
+def _multi_metric_charts(series: pd.DataFrame, anomalies: list[dict], directory: Path) -> list[dict]:
+    if series.empty:
+        return []
+    chart_path = directory / "charts" / "core-analysis.html"
+    chart_path.parent.mkdir(exist_ok=True)
+    figure = go.Figure()
+    for metric, group in series.groupby("metric", sort=False):
+        figure.add_trace(go.Scatter(x=group["period"], y=group["value"], mode="lines+markers", name=metric, yaxis="y2" if metric == "毛利率" else "y"))
+    for anomaly in anomalies:
+        point = series.loc[(series["metric"] == anomaly["metric"]) & (series["period"].astype(str).str.startswith(anomaly["period"]))]
+        figure.add_trace(go.Scatter(x=point["period"], y=point["value"], mode="markers", marker={"color": "#c5443d", "size": 12, "symbol": "x"}, name=f"{anomaly['metric']}异常", yaxis="y2" if anomaly["metric"] == "毛利率" else "y"))
+    figure.update_layout(title="多指标月度趋势与异常", yaxis={"title": "金额"}, yaxis2={"title": "毛利率", "overlaying": "y", "side": "right", "tickformat": ".0%"})
+    figure.write_html(chart_path, include_plotlyjs="cdn")
+    return [{"title": "多指标趋势与异常", "path": "charts/core-analysis.html", "download_url": "/api/jobs/{job_id}/files/charts/core-analysis.html"}]
+
+
 def validate_answer_completeness(answer: dict, plan: QuestionPlan) -> list[str]:
     missing = []
     conclusion = answer.get("core_conclusion", "")
@@ -57,6 +228,13 @@ def validate_answer_completeness(answer: dict, plan: QuestionPlan) -> list[str]:
         return [] if conclusion else ["缺少无法分析原因"]
     if not conclusion or not any(char.isdigit() for char in conclusion):
         missing.append("核心结论必须直接回答问题并包含实际数据")
+    if len(plan.metric_columns) > 1:
+        key_labels = {item.get("label") for item in answer.get("key_metrics", [])}
+        for metric in plan.metric_columns:
+            if metric not in conclusion:
+                missing.append(f"核心结论缺少请求指标：{metric}")
+            if metric not in key_labels:
+                missing.append(f"关键数据缺少请求指标：{metric}")
     titles = {section["title"] for section in answer.get("sections", [])}
     if "trend" in plan.types and "趋势分析" not in titles:
         missing.append("趋势问题缺少趋势方向")
@@ -246,7 +424,8 @@ def _suggestions(risks: list[dict], anomaly: dict | None) -> list[dict]:
     if risks:
         return [{"name": f"优先处理 {risks[0]['object']}", "expected_benefit": "针对最高风险对象定位下降来源。", "cost": "中", "potential_harm": "低", "next_step": risks[0]["mitigation"]}]
     if anomaly:
-        return [{"name": f"复核 {anomaly['object']} 异常月份", "expected_benefit": "确认异常是否来自真实业务事件。", "cost": "低", "potential_harm": "低", "next_step": "核对该月订单、价格和数据录入记录。"}]
+        subject = anomaly.get("object") or anomaly.get("metric") or "指标"
+        return [{"name": f"复核 {subject} 异常月份", "expected_benefit": "确认异常是否来自真实业务事件。", "cost": "低", "potential_harm": "低", "next_step": "核对该月原始数据和财务口径记录。"}]
     return []
 
 

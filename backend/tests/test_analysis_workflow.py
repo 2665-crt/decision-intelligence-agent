@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from studio_api.app import app
+from studio_api.answering import analyse_spreadsheet
 from studio_api.intake import read_spreadsheet
 from studio_api.questioning import plan_question
 
@@ -57,6 +58,33 @@ def write_financial_workbook(tmp_path):
     sheet.append(["2025-02", 120, 0.35, 18])
 
     path = tmp_path / "financial.xlsx"
+    workbook.save(path)
+    return path
+
+
+def write_multi_metric_financial_workbook(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "经营明细"
+    sheet.append(["经营月报"])
+    sheet.append(["单位：万元"])
+    sheet.append([])
+    sheet.append(["期间", "营业收入", "毛利额", "营业利润"])
+    sheet.append(["2023-12", 9999, 3000, 1200])
+    for index, period in enumerate(pd.period_range("2024-01", "2025-12", freq="M"), 1):
+        revenue = 100 + index * 10
+        primary_margin, secondary_margin = 0.30, 0.20
+        operating_profit = revenue * 0.15
+        if str(period) == "2025-03":
+            revenue = 600
+            primary_margin, secondary_margin = 0.20, 0.10
+            operating_profit = 2
+        primary_revenue = revenue * 0.9
+        secondary_revenue = revenue - primary_revenue
+        sheet.append([str(period), primary_revenue, primary_revenue * primary_margin, operating_profit * 0.9])
+        sheet.append([str(period), secondary_revenue, secondary_revenue * secondary_margin, operating_profit * 0.1])
+
+    path = tmp_path / "multi-metric-financial.xlsx"
     workbook.save(path)
     return path
 
@@ -142,7 +170,7 @@ def test_excel_job_produces_analysis_risks_charts_and_reports():
     markdown_report = next(report for report in result["reports"] if report["format"] == "markdown")
     markdown = client.get(markdown_report["download_url"]).text
     assert markdown.index("## 核心结论") < markdown.index("## 数据质量与分析限制")
-    assert "north" in markdown.lower() and "%" in markdown
+    assert "整体" in markdown and "%" in markdown
 
     word_report = next(report for report in result["reports"] if report["format"] == "docx")
     report = client.get(word_report["download_url"])
@@ -174,6 +202,26 @@ def test_read_spreadsheet_rejects_date_and_text_only_sheet_as_a_valid_table(tmp_
 
     assert frame.attrs["source_sheet"] == "月度收入"
     assert "营业收入" in frame.columns
+
+
+def test_financial_question_answers_all_requested_metrics_with_monthly_evidence(tmp_path):
+    request = "分析 2024-01 到 2025-12 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因，并引用数据证据。"
+
+    frame = read_spreadsheet(write_multi_metric_financial_workbook(tmp_path))
+    plan = plan_question(frame, request)
+    result = analyse_spreadsheet(frame, request, tmp_path)
+
+    assert plan.metric_columns == ("营业收入", "毛利率", "营业利润")
+    assert str(plan.period_start)[:7] == "2024-01"
+    assert str(plan.period_end)[:7] == "2025-12"
+    assert all(name in result["core_conclusion"] for name in ("营业收入", "毛利率", "营业利润"))
+    assert "毛利率 在 2024-01 至 2025-12 呈稳定趋势，从 0.29 到 0.29" in result["core_conclusion"]
+    assert "2025-03" in result["core_conclusion"]
+    assert "9999" not in result["core_conclusion"]
+    assert {item["label"] for item in result["key_metrics"]} >= {"营业收入", "毛利率", "营业利润"}
+    assert result["charts"]
+    chart = (tmp_path / result["charts"][0]["path"]).read_text(encoding="utf-8")
+    assert all(name.encode("unicode_escape").decode("ascii") in chart for name in ("营业收入", "毛利率", "营业利润", "异常"))
 
 
 def test_word_job_is_reported_as_document_evidence_not_measured_data():
