@@ -404,63 +404,64 @@ def _normalize_field_name(value: str) -> str:
 
 
 def _composite_metric_requests(profile: DatasetProfile, question: str) -> tuple[str, ...]:
-    normalized_question = _normalize_field_name(question)
-    requested: list[tuple[int, str]] = []
+    candidates: list[tuple[int, int, int, str]] = []
     for key, definition in _COMPOSITE_METRICS.items():
-        positions = [normalized_question.find(_normalize_field_name(alias)) for alias in definition["aliases"]]
-        positions = [position for position in positions if position >= 0]
-        if positions:
-            requested.append((min(positions), key))
-    requested_static = {key for _, key in requested}
+        candidates.extend(
+            (position, length, 0, key)
+            for position, length in _phrase_matches(question, definition["aliases"])
+        )
     seen_fields: set[str] = set()
-    explicit_fields: list[tuple[int, int, str]] = []
     for table in profile.tables:
         for column in table.columns:
             if (
                 column.name in seen_fields
                 or column.semantic_role != "metric"
                 or column.confidence < MIN_SEMANTIC_CONFIDENCE
-                or _covered_by_static_metric(column.name, requested_static)
             ):
                 continue
-            match = _explicit_field_match(question, column.name)
-            if match is not None:
-                position, length = match
-                explicit_fields.append((position, length, column.name))
+            matches = _phrase_matches(
+                question,
+                (
+                    column.name,
+                    re.sub(r"[（(][^）)]*[）)]", "", column.name),
+                ),
+            )
+            if matches:
+                candidates.extend(
+                    (position, length, 1, f"field:{column.name}")
+                    for position, length in matches
+                )
                 seen_fields.add(column.name)
+
+    requested: list[str] = []
+    seen_requests: set[str] = set()
     selected_spans: list[tuple[int, int]] = []
-    for position, length, field_name in sorted(explicit_fields, key=lambda item: (item[0], -item[1])):
+    for position, length, _source_priority, request in sorted(
+        candidates, key=lambda item: (item[0], -item[1], item[2])
+    ):
         end = position + length
+        if request in seen_requests:
+            continue
         if any(position >= selected_start and end <= selected_end for selected_start, selected_end in selected_spans):
             continue
-        requested.append((position, f"field:{field_name}"))
+        requested.append(request)
+        seen_requests.add(request)
         selected_spans.append((position, end))
-    return tuple(key for _, key in sorted(requested))
+    return tuple(requested)
 
 
-def _covered_by_static_metric(field_name: str, requested: set[str]) -> bool:
-    for key in requested:
-        definition = _COMPOSITE_METRICS[key]
-        aliases = definition["aliases"]
-        if _field_alias_score(field_name, aliases) > 0:
-            return True
-        if key == "gross_margin" and _field_alias_score(field_name, definition["numerator_aliases"]) > 0:
-            return True
-    return False
-
-
-def _explicit_field_match(question: str, field_name: str) -> tuple[int, int] | None:
-    variants = {
-        _normalize_field_name(field_name),
-        _normalize_field_name(re.sub(r"[（(][^）)]*[）)]", "", field_name)),
-    }
+def _phrase_matches(question: str, phrases: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
     normalized_question = _normalize_field_name(question)
-    matches = [
-        (position, len(variant))
-        for variant in variants
-        if variant and (position := normalized_question.find(variant)) >= 0
-    ]
-    return min(matches, key=lambda item: (item[0], -item[1])) if matches else None
+    matches: set[tuple[int, int]] = set()
+    for phrase in phrases:
+        normalized_phrase = _normalize_field_name(phrase)
+        if not normalized_phrase:
+            continue
+        start = 0
+        while (position := normalized_question.find(normalized_phrase, start)) >= 0:
+            matches.add((position, len(normalized_phrase)))
+            start = position + 1
+    return tuple(sorted(matches, key=lambda item: (item[0], -item[1])))
 
 
 def _requested_period_range(question: str) -> tuple[str | None, str | None]:

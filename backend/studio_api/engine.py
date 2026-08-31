@@ -51,11 +51,7 @@ def analyse_structured(source: Path, objective: str) -> dict:
             "key_metrics": [
                 {
                     "label": finding["kind"],
-                    "value": (
-                        f"{float(finding['metric_value']) * 100:.2f}%"
-                        if finding["context"].get("metric_kind") == "ratio"
-                        else str(finding["metric_value"])
-                    ),
+                    "value": _display_metric_value(finding),
                     "detail": finding["conclusion"],
                 }
                 for finding in result["findings"]
@@ -70,6 +66,13 @@ def analyse_structured(source: Path, objective: str) -> dict:
         }
     )
     return result
+
+
+def _display_metric_value(finding: dict) -> str:
+    context = finding.get("context", {})
+    if context.get("metric_kind") == "ratio" or context.get("related_metric_kind") == "ratio":
+        return f"{float(finding['metric_value']) * 100:.2f}%"
+    return str(finding["metric_value"])
 
 
 def _composite_answer(findings: list[dict], validation_status: str) -> str:

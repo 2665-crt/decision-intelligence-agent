@@ -776,6 +776,29 @@ def test_composite_explicit_metric_matching_prefers_the_longest_field_at_the_sam
     assert [metric.name for metric in plan.metrics] == ["销量目标", "成本"]
 
 
+def test_composite_metric_matching_prefers_a_longer_generic_field_over_a_static_financial_alias(tmp_path):
+    source = tmp_path / "financial-prefixed-metrics.csv"
+    pd.DataFrame(
+        {
+            "月份": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "营业收入目标": [100, 105, 110, 115, 120, 125],
+            "营业收入": [90, 95, 100, 105, 110, 115],
+            "成本": [50, 52, 54, 56, 58, 60],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import CompositeAnalysisPlan, build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "按月份分析营业收入目标和成本趋势。")
+
+    assert isinstance(plan, CompositeAnalysisPlan)
+    assert [(metric.name, metric.fields) for metric in plan.metrics] == [
+        ("营业收入目标", {"metric": "营业收入目标"}),
+        ("成本", {"metric": "成本"}),
+    ]
+
+
 def test_composite_reason_keeps_all_unique_comments_and_a_significant_numeric_clue(tmp_path):
     periods = list(pd.period_range("2025-01", "2025-07", freq="M").astype(str))
     rows = [
@@ -1022,6 +1045,57 @@ def test_composite_partial_answer_is_honest_and_margin_anomaly_uses_percentage_d
     assert margin_anomaly["conclusion"] == "毛利率 在 2025-07 的月度汇总值为 90.00%，上期为 30.50%，变化 +59.50 个百分点。"
     assert margin_card["value"] == "90.00%"
     assert margin_card["detail"] == margin_anomaly["conclusion"]
+
+
+def test_ratio_anomaly_reason_cards_use_percentage_display_for_every_reason_kind(tmp_path):
+    from studio_api.engine import run
+
+    periods = pd.period_range("2025-01", "2025-08", freq="M").astype(str)
+    revenues = [100, 101, 102, 103, 104, 105, 106, 107]
+    margin_rates = [0.30, 0.301, 0.302, 0.303, 0.304, 0.305, 0.90, 0.307]
+    variants = {
+        "reason_comment": {"备注": ["正常"] * 6 + ["异常促销", "正常"]},
+        "reason_driver": {"销量": [10] * 6 + [30, 30]},
+        "reason_unavailable": {},
+    }
+
+    for expected_kind, extra_columns in variants.items():
+        source = tmp_path / f"ratio-{expected_kind}.csv"
+        pd.DataFrame(
+            {
+                "期间": periods,
+                "营业收入": revenues,
+                "毛利": [revenue * rate for revenue, rate in zip(revenues, margin_rates)],
+                "营业利润": [20, 21, 22, 23, 24, 25, 26, 27],
+                **extra_columns,
+            }
+        ).to_csv(source, index=False)
+        result = run(
+            {
+                "objective": "按期间分析营业收入、毛利率和营业利润趋势，识别异常及可能原因。",
+                "intake": {"kind": "spreadsheet"},
+            },
+            tmp_path,
+            source,
+        )
+        reason = next(
+            finding
+            for finding in result["findings"]
+            if finding["kind"] == expected_kind
+            and finding["context"].get("related_metric") == "毛利率"
+            and finding["context"].get("period") == "2025-07"
+        )
+        card = next(
+            item
+            for item in result["key_metrics"]
+            if item["label"] == expected_kind and item["detail"] == reason["conclusion"]
+        )
+
+        assert reason["metric_value"] == 0.9
+        assert card["value"] == "90.00%"
+        assert card["detail"] == reason["conclusion"]
+        assert "关联毛利率 90.00%" in card["detail"]
+        assert "0.9" not in card["detail"]
 
 
 def test_validator_rejects_unknown_fields_missing_rows_and_mismatched_ratio_formula(tmp_path):

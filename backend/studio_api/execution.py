@@ -171,6 +171,13 @@ def _composite_reason_findings(
         comparison_mask = timestamps.dt.to_period("M") == previous_period
         comparison_rows = tuple(frame.index[comparison_mask].tolist())
         metric_value = float(anomaly.metric_value) if anomaly.metric_value is not None else None
+        related_metric_display = _related_metric_display(anomaly)
+        related_metric_parenthetical = f"（{related_metric_display.removeprefix('，')}）" if related_metric_display else ""
+        reason_context = {
+            "period": period,
+            "related_metric": anomaly.context.get("metric"),
+            "related_metric_kind": anomaly.context.get("metric_kind"),
+        }
 
         comments = _same_period_comments(frame, current_rows, plan.reason_fields)
         for field_name, row_index, text in comments:
@@ -179,7 +186,7 @@ def _composite_reason_findings(
                     kind="reason_comment",
                     value={"period": period, "field": field_name, "text": text, "source_row": row_index},
                     metric_value=metric_value,
-                    conclusion=f"{period} 的可能原因线索（非因果证明）：{field_name}“{text}”（源行 {row_index}）。",
+                    conclusion=f"{period} 的可能原因线索（非因果证明{related_metric_display}）：{field_name}“{text}”（源行 {row_index}）。",
                     confidence=anomaly.confidence,
                     evidence=_evidence(
                         plan,
@@ -188,7 +195,7 @@ def _composite_reason_findings(
                         calculation=f"same_period_comment({field_name})",
                         row_indices=(row_index,),
                     ),
-                    context={"period": period, "source_type": "comment", "related_metric": anomaly.context.get("metric")},
+                    context={**reason_context, "source_type": "comment"},
                 )
             )
 
@@ -208,7 +215,7 @@ def _composite_reason_findings(
                     },
                     metric_value=metric_value,
                     conclusion=(
-                        f"{period} 的同期联动线索（非因果证明）：{field_name} 从 {comparison:g} "
+                        f"{period} 的同期联动线索（非因果证明{related_metric_display}）：{field_name} 从 {comparison:g} "
                         f"到 {current:g}，较上期变化 {change_pct:g}%（源行 {', '.join(map(str, row_indices))}）。"
                     ),
                     confidence=anomaly.confidence,
@@ -219,7 +226,7 @@ def _composite_reason_findings(
                         calculation=f"{calculation}; monthly_percent_change({field_name})",
                         row_indices=row_indices,
                     ),
-                    context={"period": period, "source_type": "same_period_co_movement", "related_metric": anomaly.context.get("metric")},
+                    context={**reason_context, "source_type": "same_period_co_movement"},
                 )
             )
 
@@ -230,7 +237,7 @@ def _composite_reason_findings(
                     kind="reason_unavailable",
                     value={"period": period, "source_rows": list(row_indices)},
                     metric_value=metric_value,
-                    conclusion=f"{period} 的可用字段无法确定原因：未提供可用备注/说明字段或有明显变化的费用、数量、价格等同期联动字段。",
+                    conclusion=f"{period} 的可用字段无法确定原因{related_metric_parenthetical}：未提供可用备注/说明字段或有明显变化的费用、数量、价格等同期联动字段。",
                     confidence=anomaly.confidence,
                     evidence=_evidence(
                         plan,
@@ -239,10 +246,16 @@ def _composite_reason_findings(
                         calculation="field_availability_check(reason_or_driver_fields)",
                         row_indices=row_indices,
                     ),
-                    context={"period": period, "source_type": "field_availability", "related_metric": anomaly.context.get("metric")},
+                    context={**reason_context, "source_type": "field_availability"},
                 )
             )
     return tuple(findings)
+
+
+def _related_metric_display(anomaly: ComputedFinding) -> str:
+    if anomaly.context.get("metric_kind") != "ratio" or anomaly.metric_value is None:
+        return ""
+    return f"，关联{anomaly.context.get('metric', '比率指标')} {float(anomaly.metric_value) * 100:.2f}%"
 
 
 def _same_period_comments(
