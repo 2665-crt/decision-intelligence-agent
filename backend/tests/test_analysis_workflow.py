@@ -500,6 +500,117 @@ def test_composite_planning_requires_multiple_metrics_and_keeps_legacy_plan_for_
     assert isinstance(simple, AnalysisPlan)
 
 
+def test_composite_execution_aggregates_monthly_metrics_and_ratio_before_trend_calculation(tmp_path):
+    periods = pd.period_range("2024-01", "2025-12", freq="M").astype(str)
+    rows = []
+    for index, period in enumerate(periods):
+        revenue = 100 + index * 5
+        gross_profit = 45 + index * 2
+        operating_profit = 20 + index
+        rows.extend(
+            [
+                {"期间": period, "营业收入": revenue - 10, "毛利": gross_profit, "营业利润": operating_profit - 2},
+                {"期间": period, "营业收入": 10, "毛利": 0, "营业利润": 2},
+            ]
+        )
+    frame = pd.DataFrame(rows)
+    source = tmp_path / "monthly-finance.csv"
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    revenue_trend = next(finding for finding in result.findings if finding.kind == "trend" and finding.context["metric"] == "营业收入")
+    margin_trend = next(finding for finding in result.findings if finding.kind == "trend" and finding.context["metric"] == "毛利率")
+
+    assert result.status == "SUCCESS"
+    assert revenue_trend.value[0] == {"period": "2024-01", "value": 100.0}
+    assert margin_trend.value[0] == {"period": "2024-01", "value": 0.45}
+    assert margin_trend.value[0]["value"] != 0.225
+    assert revenue_trend.context["first_to_last_change_pct"] == 115.0
+    assert revenue_trend.context["maximum"] == 215.0
+    assert revenue_trend.context["minimum"] == 100.0
+    assert revenue_trend.evidence.calculation == "monthly_sum(营业收入)"
+    assert margin_trend.evidence.calculation == "monthly_sum(毛利) / monthly_sum(营业收入)"
+    assert revenue_trend.evidence.fields == ("期间", "营业收入")
+    assert revenue_trend.evidence.grouping == ("期间",)
+    assert revenue_trend.evidence.row_indices == tuple(frame.index)
+
+
+def test_composite_execution_detects_iqr_anomaly_from_monthly_aggregate_changes(tmp_path):
+    periods = pd.period_range("2024-01", "2025-12", freq="M").astype(str)
+    rows = []
+    for index, period in enumerate(periods):
+        revenue = 100 + index * 5
+        operating_profit = 20 + index
+        if period == "2025-07":
+            revenue = 600
+            operating_profit = 120
+        rows.extend(
+            [
+                {"期间": period, "营业收入": revenue - 10, "毛利": (revenue - 10) * 0.4, "营业利润": operating_profit - 2},
+                {"期间": period, "营业收入": 10, "毛利": 0, "营业利润": 2},
+            ]
+        )
+    frame = pd.DataFrame(rows)
+    source = tmp_path / "monthly-anomaly.csv"
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    anomaly = next(
+        finding
+        for finding in result.findings
+        if finding.kind == "anomaly"
+        and finding.context["metric"] == "营业收入"
+        and finding.context["period"] == "2025-07"
+    )
+
+    assert anomaly.metric_value == 600.0
+    assert anomaly.value == {"period": "2025-07", "current_value": 600.0, "preceding_value": 185.0, "change_pct": 224.3243}
+    assert anomaly.context["method"] == "IQR"
+    assert anomaly.context["threshold"]["multiplier"] == 1.5
+    assert anomaly.evidence.calculation == "iqr_outliers(monthly_percent_change(营业收入), k=1.5)"
+    assert anomaly.evidence.fields == ("期间", "营业收入")
+    assert anomaly.evidence.grouping == ("期间",)
+
+
+def test_composite_execution_reports_insufficient_monthly_evidence_for_short_anomaly_series(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-01", "2025-02", "2025-02", "2025-03", "2025-03", "2025-04", "2025-04"],
+            "营业收入": [90, 10, 100, 10, 110, 10, 120, 10],
+            "毛利": [36, 0, 40, 0, 44, 0, 48, 0],
+            "营业利润": [18, 2, 20, 2, 22, 2, 24, 2],
+        }
+    )
+    source = tmp_path / "short-monthly-finance.csv"
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert result.status == "PARTIAL"
+    assert all(finding.kind == "trend" for finding in result.findings)
+    assert any("不足五个期间" in limitation for limitation in result.limitations)
+
+
 def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
     source = tmp_path / "orders-with-invalid-value.csv"
     frame = pd.DataFrame(

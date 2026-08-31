@@ -6,7 +6,7 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from .planning import AnalysisPlan
+from .planning import AnalysisPlan, CompositeAnalysisPlan, MetricAnalysisPlan
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,9 @@ class ExecutionResult:
     limitations: tuple[str, ...]
 
 
-def execute_plan(tables: dict[str, pd.DataFrame], plan: AnalysisPlan) -> ExecutionResult:
+def execute_plan(tables: dict[str, pd.DataFrame], plan: AnalysisPlan | CompositeAnalysisPlan) -> ExecutionResult:
+    if isinstance(plan, CompositeAnalysisPlan):
+        return _execute_composite_plan(tables, plan)
     if plan.status == "INSUFFICIENT_DATA":
         return ExecutionResult(status="INSUFFICIENT_DATA", findings=(), limitations=plan.limitations)
     if plan.table is None or plan.table not in tables:
@@ -79,6 +81,218 @@ def execute_plan(tables: dict[str, pd.DataFrame], plan: AnalysisPlan) -> Executi
         return ExecutionResult(status="INSUFFICIENT_DATA", findings=(), limitations=tuple(limitations))
     status = "PARTIAL" if plan.status == "PARTIAL" or len(findings) < len(plan.operations) else "SUCCESS"
     return ExecutionResult(status=status, findings=tuple(findings), limitations=tuple(limitations))
+
+
+@dataclass(frozen=True)
+class _CompositeSeries:
+    metric: MetricAnalysisPlan
+    values: pd.Series
+    fields: tuple[str, ...]
+    calculation: str
+    row_indices: tuple[Any, ...]
+    period_rows: dict[pd.Period, tuple[Any, ...]]
+
+
+def _execute_composite_plan(
+    tables: dict[str, pd.DataFrame], plan: CompositeAnalysisPlan
+) -> ExecutionResult:
+    if plan.status == "INSUFFICIENT_DATA":
+        return ExecutionResult("INSUFFICIENT_DATA", (), plan.limitations)
+    if plan.table is None or plan.table not in tables:
+        return ExecutionResult("INSUFFICIENT_DATA", (), plan.limitations + ("计划引用的数据表不存在。",))
+    if plan.time_field is None:
+        return ExecutionResult("INSUFFICIENT_DATA", (), plan.limitations + ("复合分析缺少时间字段。",))
+
+    frame = tables[plan.table]
+    required_columns = {plan.time_field}
+    for metric in plan.metrics:
+        if not metric.missing_fields:
+            required_columns.update(metric.fields.values())
+    missing_columns = tuple(column for column in sorted(required_columns) if column not in frame.columns)
+    if missing_columns:
+        return ExecutionResult(
+            "INSUFFICIENT_DATA", (), plan.limitations + ("计划引用的字段不存在：" + "、".join(missing_columns),)
+        )
+
+    limitations = list(plan.limitations)
+    findings: list[ComputedFinding] = []
+    for metric in plan.metrics:
+        if metric.missing_fields:
+            continue
+        series, limitation = _aggregate_monthly_metric(frame, plan.time_field, metric)
+        if limitation:
+            limitations.append(f"{metric.name}：{limitation}")
+            continue
+        assert series is not None
+        if "trend" in plan.operations:
+            trend, limitation = _composite_trend_finding(plan, series)
+            if limitation:
+                limitations.append(f"{metric.name}：{limitation}")
+            else:
+                findings.append(trend)
+        if "anomaly" in plan.operations:
+            anomaly_findings, limitation = _composite_anomaly_findings(plan, series)
+            findings.extend(anomaly_findings)
+            if limitation:
+                limitations.append(f"{metric.name}：{limitation}")
+
+    if not findings:
+        return ExecutionResult("INSUFFICIENT_DATA", (), tuple(limitations))
+    status = "PARTIAL" if plan.status == "PARTIAL" or limitations else "SUCCESS"
+    return ExecutionResult(status, tuple(findings), tuple(limitations))
+
+
+def _aggregate_monthly_metric(
+    frame: pd.DataFrame, time: str, metric: MetricAnalysisPlan
+) -> tuple[_CompositeSeries | None, str | None]:
+    source_fields = tuple(metric.fields.values())
+    working = pd.DataFrame({time: pd.to_datetime(frame[time], errors="coerce")}, index=frame.index)
+    for field_name in source_fields:
+        working[field_name] = pd.to_numeric(frame[field_name], errors="coerce")
+    working = working.dropna()
+    if working.empty:
+        return None, "没有可解析的时间和数值记录。"
+    working["_period"] = working[time].dt.to_period("M")
+    period_rows = {
+        period: tuple(group.index.tolist()) for period, group in working.groupby("_period", sort=True)
+    }
+    if metric.kind == "direct":
+        field_name = metric.fields["metric"]
+        values = working.groupby("_period", sort=True)[field_name].sum(min_count=1).dropna()
+        calculation = f"monthly_sum({field_name})"
+        row_indices = tuple(working.index.tolist())
+    else:
+        numerator = metric.fields["numerator"]
+        denominator = metric.fields["denominator"]
+        grouped = working.groupby("_period", sort=True)[[numerator, denominator]].sum(min_count=1).dropna()
+        values = (grouped[numerator] / grouped[denominator]).replace([np.inf, -np.inf], np.nan).dropna()
+        calculation = f"monthly_sum({numerator}) / monthly_sum({denominator})"
+        period_rows = {period: period_rows[period] for period in values.index}
+        row_indices = tuple(row_index for rows in period_rows.values() for row_index in rows)
+    if values.empty:
+        return None, "按月聚合后没有有效数值。"
+    return _CompositeSeries(metric, values, (time, *source_fields), calculation, row_indices, period_rows), None
+
+
+def _composite_trend_finding(
+    plan: CompositeAnalysisPlan, series: _CompositeSeries
+) -> tuple[ComputedFinding | None, str | None]:
+    if len(series.values) < 2:
+        return None, "趋势计算至少需要两个按月聚合的有效期间。"
+    points = [{"period": str(period), "value": float(value)} for period, value in series.values.items()]
+    changes = _adjacent_changes(series.values)
+    first, last = float(series.values.iloc[0]), float(series.values.iloc[-1])
+    context = {
+        "metric": series.metric.name,
+        "time_granularity": "month",
+        "first_to_last_change_pct": _percent_change(first, last),
+        "maximum": float(series.values.max()),
+        "minimum": float(series.values.min()),
+        "adjacent_period_changes": changes,
+    }
+    return (
+        ComputedFinding(
+            kind="trend",
+            value=points,
+            metric_value=last,
+            conclusion=f"{series.metric.name} 月度汇总值从 {first:g} 变化到 {last:g}。",
+            confidence=_composite_confidence(plan, series.metric),
+            evidence=_evidence(
+                plan,
+                fields=series.fields,
+                grouping=(plan.time_field or "",),
+                calculation=series.calculation,
+                row_indices=series.row_indices,
+            ),
+            context=context,
+        ),
+        None,
+    )
+
+
+def _composite_anomaly_findings(
+    plan: CompositeAnalysisPlan, series: _CompositeSeries
+) -> tuple[tuple[ComputedFinding, ...], str | None]:
+    changes = _adjacent_changes(series.values)
+    if len(changes) < 4:
+        return (), "按月聚合后不足五个期间，无法基于相邻期间变化执行 IQR 异常检测。"
+    change_values = pd.Series([item["change_pct"] for item in changes], dtype="float64")
+    first_quartile = float(change_values.quantile(0.25))
+    third_quartile = float(change_values.quantile(0.75))
+    spread = third_quartile - first_quartile
+    lower, upper = first_quartile - 1.5 * spread, third_quartile + 1.5 * spread
+    threshold = {"method": "IQR", "multiplier": 1.5, "lower": round(lower, 4), "upper": round(upper, 4)}
+    calculation = f"iqr_outliers(monthly_percent_change({series.metric.name}), k=1.5)"
+    outliers = [item for item in changes if item["change_pct"] < lower or item["change_pct"] > upper]
+    if not outliers:
+        return (
+            (
+                ComputedFinding(
+                    kind="anomaly",
+                    value=[],
+                    metric_value=None,
+                    conclusion=f"{series.metric.name} 的月度相邻期间变化未发现超过 IQR 阈值的异常。",
+                    confidence=_composite_confidence(plan, series.metric),
+                    evidence=_evidence(
+                        plan, fields=series.fields, grouping=(plan.time_field or "",), calculation=calculation, row_indices=series.row_indices
+                    ),
+                    context={"metric": series.metric.name, "time_granularity": "month", "method": "IQR", "threshold": threshold},
+                ),
+            ),
+            None,
+        )
+    findings = []
+    for item in outliers:
+        period = pd.Period(item["period"], freq="M")
+        preceding_period = series.values.index[series.values.index.get_loc(period) - 1]
+        findings.append(
+            ComputedFinding(
+                kind="anomaly",
+                value=item,
+                metric_value=item["current_value"],
+                conclusion=f"{series.metric.name} 在 {item['period']} 的月度汇总值为 {item['current_value']:g}，较上期变化 {item['change_pct']:g}%。",
+                confidence=_composite_confidence(plan, series.metric),
+                evidence=_evidence(
+                    plan,
+                    fields=series.fields,
+                    grouping=(plan.time_field or "",),
+                    calculation=calculation,
+                    row_indices=series.period_rows[preceding_period] + series.period_rows[period],
+                ),
+                context={
+                    "metric": series.metric.name,
+                    "time_granularity": "month",
+                    "period": item["period"],
+                    "method": "IQR",
+                    "threshold": threshold,
+                },
+            )
+        )
+    return tuple(findings), None
+
+
+def _adjacent_changes(values: pd.Series) -> list[dict[str, float | str]]:
+    changes = []
+    for index in range(1, len(values)):
+        preceding = float(values.iloc[index - 1])
+        current = float(values.iloc[index])
+        if preceding == 0:
+            continue
+        changes.append(
+            {
+                "period": str(values.index[index]),
+                "current_value": current,
+                "preceding_value": preceding,
+                "change_pct": _percent_change(preceding, current),
+            }
+        )
+    return changes
+
+
+def _percent_change(preceding: float, current: float) -> float | None:
+    if preceding == 0:
+        return None
+    return round((current - preceding) / abs(preceding) * 100, 4)
 
 
 def _execute_ranking(frame: pd.DataFrame, plan: AnalysisPlan) -> tuple[ComputedFinding, ...]:
@@ -252,7 +466,7 @@ def _execute_correlation(frame: pd.DataFrame, plan: AnalysisPlan) -> tuple[Compu
 
 
 def _evidence(
-    plan: AnalysisPlan,
+    plan: AnalysisPlan | CompositeAnalysisPlan,
     *,
     fields: tuple[str, ...],
     grouping: tuple[str, ...],
@@ -271,6 +485,13 @@ def _evidence(
 
 def _confidence(plan: AnalysisPlan, *roles: str) -> float:
     values = [plan.field_confidences[role] for role in roles if role in plan.field_confidences]
+    return round(min(values), 4) if values else 0.0
+
+
+def _composite_confidence(plan: CompositeAnalysisPlan, metric: MetricAnalysisPlan) -> float:
+    values = list(metric.field_confidences.values())
+    if plan.time_confidence is not None:
+        values.append(plan.time_confidence)
     return round(min(values), 4) if values else 0.0
 
 
