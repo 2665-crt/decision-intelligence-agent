@@ -387,6 +387,29 @@ def test_composite_plan_does_not_treat_growth_or_margin_rates_as_direct_amounts(
     assert next(metric for metric in plan.metrics if metric.name == "营业利润").missing_fields == ("metric",)
 
 
+def test_composite_plan_does_not_treat_a_share_ratio_as_revenue_amount(tmp_path):
+    source = tmp_path / "share-ratio-only.csv"
+    pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入占比": [0.40, 0.50, 0.30],
+            "毛利": [30, 36, 18],
+            "营业利润": [15, 18, 6],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+
+    assert next(metric for metric in plan.metrics if metric.name == "营业收入").missing_fields == ("metric",)
+    gross_margin = next(metric for metric in plan.metrics if metric.name == "毛利率")
+    assert gross_margin.fields == {"numerator": "毛利"}
+    assert gross_margin.missing_fields == ("denominator",)
+    assert gross_margin.formula is None
+
+
 def test_composite_plan_uses_a_partial_table_with_time_over_a_complete_table_without_time(tmp_path):
     source = tmp_path / "two-tables.json"
     source.write_text(

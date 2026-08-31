@@ -113,7 +113,7 @@ _COMPOSITE_METRICS = {
 _COMPOSITE_TIME_MARKERS = ("期间", "日期", "时间", "月份", "月度", "date", "time", "month", "period")
 _REASON_EVIDENCE_MARKERS = ("原因", "理由", "备注", "说明", "证据", "reason", "evidence", "note", "comment")
 _REASON_FIELD_ALIASES = ("备注", "说明", "原因", "note", "comment", "reason", "description")
-_RATE_OR_GROWTH_MARKERS = ("率", "比例", "百分比", "增长", "同比", "环比", "rate", "margin", "ratio", "growth", "percent", "yoy", "mom")
+_RATE_OR_GROWTH_MARKERS = ("率", "占比", "比例", "百分比", "增长", "同比", "环比", "rate", "margin", "ratio", "growth", "percent", "yoy", "mom")
 
 
 def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan | CompositeAnalysisPlan:
