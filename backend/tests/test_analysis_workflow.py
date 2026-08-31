@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 from io import BytesIO
 
 import pandas as pd
@@ -13,6 +14,30 @@ from studio_api.questioning import plan_question
 
 
 client = TestClient(app)
+
+
+def test_profile_classifies_nonstandard_order_fields_without_fixed_business_names(tmp_path):
+    source = tmp_path / "orders.csv"
+    source.write_text(
+        "dt,col1,value_x\n"
+        "2025-01-01,alpha,10\n"
+        "2025-01-02,beta,12\n"
+        "2025-01-03,alpha,11\n",
+        encoding="utf-8",
+    )
+
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    columns = {column.name: column for column in profile.tables[0].columns}
+
+    assert profile.file_hash == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert columns["dt"].semantic_role == "time"
+    assert columns["dt"].confidence >= 0.70
+    assert columns["col1"].semantic_role == "dimension"
+    assert columns["col1"].confidence >= 0.70
+    assert columns["value_x"].semantic_role == "metric"
+    assert columns["value_x"].confidence >= 0.70
 
 
 def make_sales_workbook() -> bytes:

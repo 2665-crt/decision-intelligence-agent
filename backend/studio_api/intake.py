@@ -3,8 +3,10 @@ from pathlib import Path
 import pandas as pd
 from docx import Document
 
+from .profiling import profile_file, read_tables
 
-SPREADSHEET_EXTENSIONS = {".xlsx", ".xls", ".csv"}
+
+SPREADSHEET_EXTENSIONS = {".xlsx", ".xls", ".csv", ".tsv", ".json"}
 DOCUMENT_EXTENSIONS = {".docx"}
 
 
@@ -15,12 +17,14 @@ def supported(filename: str) -> bool:
 def inspect_file(path: Path) -> dict:
     suffix = path.suffix.lower()
     if suffix in SPREADSHEET_EXTENSIONS:
-        frame = read_spreadsheet(path)
+        profile = profile_file(path)
+        first_table = profile.tables[0] if profile.tables else None
         return {
             "kind": "spreadsheet",
-            "rows": int(len(frame)),
-            "columns": [str(column) for column in frame.columns],
-            "missing_cells": int(frame.isna().sum().sum()),
+            "rows": first_table.row_count if first_table else 0,
+            "columns": [column.name for column in first_table.columns] if first_table else [],
+            "missing_cells": first_table.missing_cells if first_table else 0,
+            "profile": profile.to_dict(),
         }
     document = Document(path)
     statements = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
@@ -34,6 +38,16 @@ def inspect_file(path: Path) -> dict:
 def read_spreadsheet(path: Path) -> pd.DataFrame:
     if path.suffix.lower() == ".csv":
         return pd.read_csv(path)
+    if path.suffix.lower() == ".tsv":
+        return pd.read_csv(path, sep="\t")
+    if path.suffix.lower() == ".json":
+        tables = read_tables(path)
+        if not tables:
+            return pd.DataFrame()
+        frame = tables[0][1].copy()
+        frame.attrs["source_sheet"] = tables[0][0]
+        frame.attrs["header_row"] = 0
+        return frame
     return _best_table(pd.ExcelFile(path))
 
 
