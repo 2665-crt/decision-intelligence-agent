@@ -43,6 +43,7 @@ class CompositeAnalysisPlan:
     time_confidence: float | None
     operations: tuple[str, ...]
     metrics: tuple[MetricAnalysisPlan, ...]
+    reason_fields: tuple[str, ...]
     limitations: tuple[str, ...]
 
 
@@ -98,7 +99,7 @@ _COMPOSITE_METRICS = {
     "gross_margin": {
         "name": "毛利率",
         "kind": "ratio",
-        "aliases": ("毛利率", "毛利率", "gross margin", "gross_margin", "margin rate"),
+        "aliases": ("毛利率", "gross margin", "gross_margin", "margin rate"),
         "numerator_aliases": ("毛利", "毛利额", "gross profit"),
         "denominator_aliases": ("营业收入", "主营业务收入", "营收", "收入", "revenue", "income"),
     },
@@ -111,6 +112,8 @@ _COMPOSITE_METRICS = {
 
 _COMPOSITE_TIME_MARKERS = ("期间", "日期", "时间", "月份", "月度", "date", "time", "month", "period")
 _REASON_EVIDENCE_MARKERS = ("原因", "理由", "备注", "说明", "证据", "reason", "evidence", "note", "comment")
+_REASON_FIELD_ALIASES = ("备注", "说明", "原因", "note", "comment", "reason", "description")
+_RATE_OR_GROWTH_MARKERS = ("率", "比例", "百分比", "增长", "同比", "环比", "rate", "margin", "ratio", "growth", "percent", "yoy", "mom")
 
 
 def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan | CompositeAnalysisPlan:
@@ -177,12 +180,15 @@ def _build_composite_plan(
     operations: tuple[str, ...],
 ) -> CompositeAnalysisPlan:
     table, time_column, metrics = _select_composite_table(profile.tables, requested_metrics, question)
+    reason_fields = _select_reason_fields(table.columns) if table is not None else ()
     limitations: list[str] = []
     if time_column is None:
         limitations.append("未找到满足语义置信度 >= 0.70 的时间字段；低置信度字段不会用于关键计算。")
     missing_metrics = [metric.name for metric in metrics if metric.missing_fields]
     if missing_metrics:
         limitations.append("未找到请求指标所需的高置信度字段：" + "、".join(missing_metrics) + "。")
+    if "reason_evidence" in operations and not reason_fields:
+        limitations.append("未找到满足语义置信度 >= 0.70 的备注/说明/原因证据字段。")
     if table is None or not any(not metric.missing_fields for metric in metrics) or time_column is None:
         status = "INSUFFICIENT_DATA"
     elif missing_metrics:
@@ -198,6 +204,7 @@ def _build_composite_plan(
         time_confidence=time_column.confidence if time_column is not None else None,
         operations=operations,
         metrics=tuple(metrics),
+        reason_fields=reason_fields,
         limitations=tuple(limitations),
     )
 
@@ -215,7 +222,7 @@ def _select_composite_table(
         return None, None, [_missing_metric_plan(request) for request in requested_metrics]
     _, _, table, time_column, metrics = max(
         candidates,
-        key=lambda candidate: (candidate[0], candidate[1], -candidate[2].missing_cells),
+        key=lambda candidate: (candidate[1], candidate[0], -candidate[2].missing_cells),
     )
     return table, time_column, metrics
 
@@ -295,7 +302,9 @@ def _match_composite_metric(columns: list[ColumnProfile], aliases: tuple[str, ..
     eligible = [
         column
         for column in columns
-        if column.semantic_role == "metric" and column.confidence >= MIN_SEMANTIC_CONFIDENCE
+        if column.semantic_role == "metric"
+        and column.confidence >= MIN_SEMANTIC_CONFIDENCE
+        and _is_amount_field(column.name)
     ]
     scored = sorted(
         ((_field_alias_score(column.name, aliases), position, column) for position, column in enumerate(eligible)),
@@ -307,6 +316,21 @@ def _match_composite_metric(columns: list[ColumnProfile], aliases: tuple[str, ..
     if len(scored) > 1 and scored[0][0] == scored[1][0]:
         return None
     return scored[0][2]
+
+
+def _is_amount_field(field_name: str) -> bool:
+    normalized_field = _normalize_field_name(field_name)
+    return not any(_normalize_field_name(marker) in normalized_field for marker in _RATE_OR_GROWTH_MARKERS)
+
+
+def _select_reason_fields(columns: list[ColumnProfile]) -> tuple[str, ...]:
+    return tuple(
+        column.name
+        for column in columns
+        if column.confidence >= MIN_SEMANTIC_CONFIDENCE
+        and column.semantic_role in {"dimension", "text"}
+        and _field_alias_score(column.name, _REASON_FIELD_ALIASES) > 0
+    )
 
 
 def _field_alias_score(field_name: str, aliases: tuple[str, ...]) -> int:

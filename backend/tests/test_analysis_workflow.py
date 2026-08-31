@@ -344,6 +344,139 @@ def test_plan_builds_composite_chinese_metric_analysis_from_one_profiled_table(t
     assert plan.metrics[1].formula == "sum(毛利（万元）) / sum(营业收入（万元）)"
 
 
+def test_composite_plan_does_not_use_a_margin_column_as_gross_profit_amount(tmp_path):
+    source = tmp_path / "margin-only.csv"
+    pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入": [100, 120, 90],
+            "毛利率": [0.30, 0.30, 0.20],
+            "营业利润": [15, 18, 6],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+    gross_margin = next(metric for metric in plan.metrics if metric.name == "毛利率")
+
+    assert gross_margin.fields == {"denominator": "营业收入"}
+    assert gross_margin.missing_fields == ("numerator",)
+    assert gross_margin.formula is None
+
+
+def test_composite_plan_does_not_treat_growth_or_margin_rates_as_direct_amounts(tmp_path):
+    source = tmp_path / "rates-only.csv"
+    pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入增长率": [0.10, 0.12, -0.05],
+            "毛利": [30, 36, 18],
+            "营业利润率": [0.15, 0.15, 0.07],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+
+    assert next(metric for metric in plan.metrics if metric.name == "营业收入").missing_fields == ("metric",)
+    assert next(metric for metric in plan.metrics if metric.name == "毛利率").missing_fields == ("denominator",)
+    assert next(metric for metric in plan.metrics if metric.name == "营业利润").missing_fields == ("metric",)
+
+
+def test_composite_plan_uses_a_partial_table_with_time_over_a_complete_table_without_time(tmp_path):
+    source = tmp_path / "two-tables.json"
+    source.write_text(
+        json.dumps(
+            {
+                "complete_without_time": [
+                    {"营业收入": 100, "毛利": 30, "营业利润": 15},
+                    {"营业收入": 120, "毛利": 36, "营业利润": 18},
+                ],
+                "partial_with_time": [
+                    {"期间": "2025-01", "营业收入": 100, "营业利润": 15},
+                    {"期间": "2025-02", "营业收入": 120, "营业利润": 18},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "按期间分析营业收入、毛利率和营业利润趋势，识别异常。")
+
+    assert plan.table == "partial_with_time"
+    assert plan.time_field == "期间"
+    assert plan.status == "PARTIAL"
+
+
+def test_composite_plan_keeps_only_high_confidence_reason_evidence_fields_and_reports_missing_notes(tmp_path):
+    source = tmp_path / "financial-notes.csv"
+    no_notes_source = tmp_path / "financial-no-notes.csv"
+    pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入": [100, 120, 90],
+            "毛利": [30, 36, 18],
+            "营业利润": [15, 18, 6],
+            "备注": ["正常", "正常", "需求回落"],
+            "说明": ["仅一条", None, None],
+        }
+    ).to_csv(source, index=False)
+    pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入": [100, 120, 90],
+            "毛利": [30, 36, 18],
+            "营业利润": [15, 18, 6],
+        }
+    ).to_csv(no_notes_source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile_with_notes = profile_file(source)
+    assert next(column for column in profile_with_notes.tables[0].columns if column.name == "说明").confidence < 0.70
+
+    with_notes = build_plan(profile_with_notes, "按期间分析营业收入、毛利率和营业利润趋势，识别异常并引用备注证据。")
+    without_notes = build_plan(
+        profile_file(no_notes_source), "按期间分析营业收入、毛利率和营业利润趋势，识别异常并引用原因证据。"
+    )
+
+    assert with_notes.reason_fields == ("备注",)
+    assert without_notes.reason_fields == ()
+    assert any("备注/说明/原因证据字段" in limitation for limitation in without_notes.limitations)
+
+
+def test_composite_planning_requires_multiple_metrics_and_keeps_legacy_plan_for_simple_questions(tmp_path):
+    source = tmp_path / "financial.csv"
+    pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入": [100, 120, 90],
+            "毛利": [30, 36, 18],
+            "营业利润": [15, 18, 6],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import AnalysisPlan, CompositeAnalysisPlan, build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    no_explicit_time = build_plan(profile, "分析营业收入、营业利润趋势并识别异常。")
+    simple = build_plan(profile, "分析营业收入趋势")
+
+    assert isinstance(no_explicit_time, AnalysisPlan)
+    assert not isinstance(no_explicit_time, CompositeAnalysisPlan)
+    assert isinstance(simple, AnalysisPlan)
+
+
 def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
     source = tmp_path / "orders-with-invalid-value.csv"
     frame = pd.DataFrame(
