@@ -1,6 +1,7 @@
 from datetime import datetime
 import hashlib
 from io import BytesIO
+import json
 
 import pandas as pd
 from docx import Document
@@ -38,6 +39,23 @@ def test_profile_classifies_nonstandard_order_fields_without_fixed_business_name
     assert columns["col1"].confidence >= 0.70
     assert columns["value_x"].semantic_role == "metric"
     assert columns["value_x"].confidence >= 0.70
+
+
+def test_profile_serializes_nested_json_values_without_failing_unique_measurement(tmp_path):
+    source = tmp_path / "events.json"
+    source.write_text(
+        json.dumps([{"dt": "2025-01-01", "tags": ["north", "urgent"], "value_x": 10}]),
+        encoding="utf-8",
+    )
+
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    tags = next(column for column in profile.tables[0].columns if column.name == "tags")
+
+    assert tags.semantic_role == "text"
+    assert tags.samples == ['["north","urgent"]']
+    assert tags.unique_ratio == 1.0
 
 
 def make_sales_workbook() -> bytes:

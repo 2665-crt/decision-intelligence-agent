@@ -16,6 +16,14 @@ test("requires a dataset and goal before creating an analysis session", () => {
   expect(screen.getByRole("button", { name: "创建任务" })).toBeEnabled();
 });
 
+test("accepts TSV and JSON datasets in the upload control", () => {
+  render(<App />);
+
+  fireEvent.click(screen.getAllByRole("button", { name: "新建分析" })[0]);
+
+  expect(screen.getByLabelText("上传数据集")).toHaveAttribute("accept", ".xlsx,.xls,.csv,.tsv,.json,.docx");
+});
+
 test("renders a fixed workspace with session history and modular result tabs", () => {
   render(<App />);
 

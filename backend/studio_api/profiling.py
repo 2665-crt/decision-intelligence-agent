@@ -105,24 +105,27 @@ def _frame_from_json_value(value: Any) -> pd.DataFrame:
 def _profile_table(name: str, frame: pd.DataFrame) -> TableProfile:
     normalized = frame.copy()
     normalized.columns = [str(column) for column in normalized.columns]
+    stable = normalized.map(_stable_value)
     return TableProfile(
         name=str(name),
         row_count=int(len(normalized)),
         column_count=int(len(normalized.columns)),
         missing_cells=int(normalized.isna().sum().sum()),
-        duplicate_rows=int(normalized.duplicated().sum()),
+        duplicate_rows=int(stable.duplicated().sum()),
         columns=[_profile_column(str(column), normalized[column]) for column in normalized.columns],
     )
 
 
 def _profile_column(name: str, series: pd.Series) -> ColumnProfile:
-    non_null = series.dropna()
+    non_null = series[series.map(lambda value: not _is_missing(value))]
+    stable_values = non_null.map(_stable_value)
+    has_complex_values = any(isinstance(value, (list, dict, set, tuple)) for value in non_null)
     total = len(series)
     non_null_ratio = round(len(non_null) / total, 4) if total else 0.0
-    unique_ratio = round(non_null.nunique(dropna=True) / len(non_null), 4) if len(non_null) else 0.0
-    parsed_type, numeric = _parsed_type(non_null)
-    role, confidence = _semantic_role(name, non_null, parsed_type, numeric, unique_ratio)
-    samples = [_json_value(value) for value in non_null.head(5).tolist()]
+    unique_ratio = round(stable_values.nunique(dropna=True) / len(non_null), 4) if len(non_null) else 0.0
+    parsed_type, numeric = _parsed_type(stable_values)
+    role, confidence = _semantic_role(name, stable_values, parsed_type, numeric, unique_ratio, has_complex_values)
+    samples = stable_values.head(5).tolist()
     numeric_summary = None
     if numeric is not None and len(numeric):
         numeric_summary = {
@@ -158,11 +161,13 @@ def _parsed_type(values: pd.Series) -> tuple[str, pd.Series | None]:
     return "string", None
 
 
-def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.Series | None, unique_ratio: float) -> tuple[str, float]:
+def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.Series | None, unique_ratio: float, has_complex_values: bool) -> tuple[str, float]:
     label = name.casefold()
     identifier_label = any(token in label for token in ("id", "code", "key", "编号", "编码", "序号"))
     if parsed_type == "empty":
         return "uncertain", 0.0
+    if has_complex_values:
+        return "text", 0.8
     if parsed_type == "datetime":
         return "time", 0.9
     if parsed_type == "numeric":
@@ -184,9 +189,36 @@ def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.S
     return "uncertain", 0.5
 
 
-def _json_value(value: Any) -> Any:
+def _is_missing(value: Any) -> bool:
+    if isinstance(value, (list, dict, set, tuple)):
+        return False
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _stable_value(value: Any) -> Any:
+    if _is_missing(value):
+        return None
+    if isinstance(value, (list, dict, set, tuple)):
+        return json.dumps(_json_compatible(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if hasattr(value, "item"):
-        return value.item()
+        return _stable_value(value.item())
+    return value
+
+
+def _json_compatible(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, set):
+        return sorted((_json_compatible(item) for item in value), key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        return _json_compatible(value.item())
     return value
