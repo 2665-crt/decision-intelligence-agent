@@ -135,6 +135,98 @@ def test_profile_serializes_nested_json_values_without_failing_unique_measuremen
     assert tags.unique_ratio == 1.0
 
 
+def test_relationships_auto_use_matching_unique_ids_across_excel_sheets(tmp_path):
+    source = tmp_path / "customers.xlsx"
+    workbook = Workbook()
+    customers = workbook.active
+    customers.title = "customers"
+    customers.append(["customer_id", "name"])
+    customers.append([101, "A"])
+    customers.append([102, "B"])
+    orders = workbook.create_sheet("orders")
+    orders.append(["customer_id", "order_value"])
+    orders.append([101, 10])
+    orders.append([102, 20])
+    workbook.save(source)
+
+    from studio_api.profiling import profile_file
+    from studio_api.relationships import discover_relationships
+
+    candidates = discover_relationships([profile_file(source)])
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.left_table == "customers"
+    assert candidate.right_table == "orders"
+    assert candidate.left_field == candidate.right_field == "customer_id"
+    assert candidate.relation_type == "key_match"
+    assert candidate.confidence >= 0.85
+    assert candidate.can_auto_use is True
+    assert candidate.requires_confirmation is False
+
+
+def test_relationships_do_not_auto_use_similar_low_quality_keys(tmp_path):
+    source = tmp_path / "ambiguous.xlsx"
+    workbook = Workbook()
+    left = workbook.active
+    left.title = "left"
+    left.append(["customer_id"])
+    left.append([101])
+    left.append([101])
+    left.append([102])
+    right = workbook.create_sheet("right")
+    right.append(["customer-id"])
+    right.append([101])
+    right.append([103])
+    right.append([103])
+    workbook.save(source)
+
+    from studio_api.profiling import profile_file
+    from studio_api.relationships import discover_relationships
+
+    candidates = discover_relationships([profile_file(source)])
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.confidence < 0.85
+    assert candidate.can_auto_use is False
+    assert candidate.requires_confirmation is True
+
+
+def test_batch_profiles_find_matching_unique_ids_in_independent_files(tmp_path):
+    customers = tmp_path / "customers.csv"
+    orders = tmp_path / "orders.csv"
+    customers.write_text("customer_id,name\n101,A\n102,B\n", encoding="utf-8")
+    orders.write_text("customer_id,order_value\n101,10\n102,20\n", encoding="utf-8")
+
+    from studio_api.profiling import profile_files
+    from studio_api.relationships import discover_relationships
+
+    profiles = profile_files([customers, orders])
+    candidates = discover_relationships(profiles)
+
+    assert len(profiles) == 2
+    assert {profile.file_hash for profile in profiles} == {
+        hashlib.sha256(customers.read_bytes()).hexdigest(),
+        hashlib.sha256(orders.read_bytes()).hexdigest(),
+    }
+    assert len(candidates) == 1
+    assert candidates[0].can_auto_use is True
+    assert candidates[0].left_source != candidates[0].right_source
+
+
+def test_relationships_return_empty_when_no_normalized_name_or_value_overlap(tmp_path):
+    first = tmp_path / "first.csv"
+    second = tmp_path / "second.csv"
+    first.write_text("account_id\n101\n102\n", encoding="utf-8")
+    second.write_text("device_code\n301\n302\n", encoding="utf-8")
+
+    from studio_api.profiling import profile_files
+    from studio_api.relationships import discover_relationships
+
+    assert discover_relationships(profile_files([first, second])) == []
+
+
 def test_plan_ranks_the_requested_dimension_and_metric(tmp_path):
     source = tmp_path / "orders.csv"
     frame = pd.DataFrame(

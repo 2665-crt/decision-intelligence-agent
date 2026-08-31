@@ -18,6 +18,8 @@ class ColumnProfile:
     unique_ratio: float
     samples: list[Any]
     numeric_summary: dict[str, float | int] | None
+    distinct_values: list[str]
+    distinct_values_complete: bool
     semantic_role: str
     confidence: float
 
@@ -50,6 +52,10 @@ def profile_file(path: Path) -> DatasetProfile:
         source_name=path.name,
         tables=tables,
     )
+
+
+def profile_files(paths: list[Path]) -> list[DatasetProfile]:
+    return [profile_file(Path(path)) for path in paths]
 
 
 def read_tables(path: Path) -> list[tuple[str, pd.DataFrame]]:
@@ -134,6 +140,8 @@ def _profile_column(name: str, series: pd.Series) -> ColumnProfile:
             "max": round(float(numeric.max()), 6),
             "mean": round(float(numeric.mean()), 6),
         }
+    distinct_values = sorted({_normalized_join_value(value) for value in stable_values})
+    distinct_values_complete = len(distinct_values) <= 1000
     return ColumnProfile(
         name=name,
         parsed_type=parsed_type,
@@ -142,6 +150,8 @@ def _profile_column(name: str, series: pd.Series) -> ColumnProfile:
         unique_ratio=unique_ratio,
         samples=samples,
         numeric_summary=numeric_summary,
+        distinct_values=distinct_values[:1000],
+        distinct_values_complete=distinct_values_complete,
         semantic_role=role,
         confidence=round(confidence, 4),
     )
@@ -222,3 +232,7 @@ def _json_compatible(value: Any) -> Any:
     if hasattr(value, "item"):
         return _json_compatible(value.item())
     return value
+
+
+def _normalized_join_value(value: Any) -> str:
+    return str(value).strip().casefold()
