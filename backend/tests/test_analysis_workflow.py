@@ -1409,6 +1409,55 @@ def test_one_dataset_can_restore_independent_analysis_sessions():
     assert client.get(f"/api/sessions/{copied.json()['id']}").status_code == 404
 
 
+def test_composite_financial_question_returns_all_requested_metrics_with_monthly_evidence_via_api():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "财务月报"
+    sheet.append(["期间", "营业收入", "毛利", "营业利润", "备注"])
+    for offset, period in enumerate(pd.period_range("2024-01", "2025-12", freq="M")):
+        revenue = 100 + offset
+        gross_profit = revenue * 0.3
+        operating_profit = revenue * 0.12
+        note = "正常经营"
+        if str(period) == "2025-06":
+            revenue = 260
+            gross_profit = 78
+            operating_profit = 40
+            note = "临时大额订单确认"
+        sheet.append([str(period), revenue, gross_profit, operating_profit, note])
+    content = BytesIO()
+    workbook.save(content)
+    objective = "分析 2024-01 到 2025-12 的营业收入、毛利率和营业利润趋势，指出异常月份及可能原因，并引用数据证据。"
+
+    uploaded = client.post(
+        "/api/datasets",
+        files={"file": ("monthly-finance.xlsx", content.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert uploaded.status_code == 201
+    created = client.post("/api/sessions", json={"dataset_id": uploaded.json()["id"], "objective": objective})
+    assert created.status_code == 201
+
+    result = client.post(f"/api/sessions/{created.json()['id']}/analyze")
+
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload["status"] == "succeeded"
+    assert payload["validation_status"] == "SUCCESS"
+    assert "未找到满足语义置信度 >= 0.70 的必要字段：metric" not in payload["answer"]
+    assert {finding["context"]["metric"] for finding in payload["findings"] if finding["kind"] == "trend"} == {"营业收入", "毛利率", "营业利润"}
+    assert "2025-06" in payload["answer"]
+    assert "可能原因线索" in payload["answer"]
+    assert payload["answer"].startswith("结论：")
+    assert "趋势：营业收入" in payload["answer"]
+    assert "异常月份：" in payload["answer"]
+    assert "毛利率：未发现超过 IQR 阈值的月度异常" in payload["answer"]
+    assert "原因证据：" in payload["answer"]
+    assert all(finding["evidence"]["source"]["table"] == "财务月报" for finding in payload["findings"])
+    margin = next(finding for finding in payload["findings"] if finding["kind"] == "trend" and finding["context"]["metric"] == "毛利率")
+    assert margin["evidence"]["calculation"] == "monthly_sum(毛利) / monthly_sum(营业收入)"
+    assert margin["evidence"]["formula"] == "sum(毛利) / sum(营业收入)"
+
+
 def test_semantic_session_titles_are_short_and_duplicates_are_numbered():
     dataset_response = client.post(
         "/api/datasets",

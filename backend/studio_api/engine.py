@@ -42,6 +42,8 @@ def analyse_structured(source: Path, objective: str) -> dict:
     validated = validate_result(execute_plan(tables, plan), profile)
     result = validated.to_dict()
     plan_details = _plan_details(plan)
+    if isinstance(plan, CompositeAnalysisPlan) and result["findings"]:
+        result["answer"] = _composite_answer(result["findings"])
     result.update(
         {
             "analysis": {
@@ -68,6 +70,56 @@ def analyse_structured(source: Path, objective: str) -> dict:
         }
     )
     return result
+
+
+def _composite_answer(findings: list[dict]) -> str:
+    trends = [finding for finding in findings if finding["kind"] == "trend"]
+    trend_items = [_format_composite_trend(finding) for finding in trends]
+    anomalies = [
+        finding
+        for finding in findings
+        if finding["kind"] == "anomaly" and isinstance(finding["value"], dict) and finding["value"]
+    ]
+    anomaly_items = [
+        f"{finding['context']['metric']} {finding['value']['period']}：{finding['value']['current_value']:g}"
+        f"（较上期 {finding['value']['change_pct']:+g}%）"
+        for finding in anomalies
+    ]
+    anomaly_items.extend(
+        f"{finding['context']['metric']}：未发现超过 IQR 阈值的月度异常"
+        for finding in findings
+        if finding["kind"] == "anomaly" and finding["value"] == []
+    )
+    if not anomaly_items:
+        anomaly_items = ["没有足够证据识别月度异常。"]
+    reasons = [finding for finding in findings if finding["kind"] in {"reason_comment", "reason_driver", "reason_unavailable"}]
+    reason_items = [_format_reason(finding) for finding in reasons]
+    if not reason_items:
+        reason_items = ["没有与异常月份对应的可验证原因线索。"]
+    return "结论：已完成所请求指标的月度分析。趋势：" + "；".join(trend_items) + "。异常月份：" + "；".join(anomaly_items) + "。原因证据：" + "；".join(reason_items) + "。"
+
+
+def _format_composite_trend(finding: dict) -> str:
+    metric = finding["context"]["metric"]
+    points = finding["value"]
+    first = float(points[0]["value"])
+    last = float(points[-1]["value"])
+    if finding["context"].get("metric_kind") == "ratio":
+        change = (last - first) * 100
+        direction = "上升" if change > 0 else "下降" if change < 0 else "持平"
+        return f"{metric}从 {first * 100:.2f}% 到 {last * 100:.2f}%（{direction} {abs(change):.2f} 个百分点）"
+    change = float(finding["context"].get("first_to_last_change_pct") or 0)
+    direction = "上升" if change > 0 else "下降" if change < 0 else "持平"
+    return f"{metric}从 {first:g} 到 {last:g}（{direction} {abs(change):.2f}%）"
+
+
+def _format_reason(finding: dict) -> str:
+    value = finding["value"]
+    if finding["kind"] == "reason_comment":
+        return f"{value['period']}：可能原因线索，{value['field']}“{value['text']}”（源行 {value['source_row']}，非因果证明）"
+    if finding["kind"] == "reason_driver":
+        return f"{value['period']}：同期联动线索，{value['field']} {value['comparison_value']:g}→{value['current_value']:g}（{value['change_pct']:+g}%，非因果证明）"
+    return f"{value['period']}：可用字段无法确定原因。"
 
 
 def _plan_details(plan: object) -> dict:
