@@ -17,6 +17,80 @@ from studio_api.questioning import plan_question
 client = TestClient(app)
 
 
+def test_generic_engine_returns_a_traceable_direct_ranking_answer(tmp_path):
+    source = tmp_path / "measurements.csv"
+    source.write_text(
+        "bucket,measure_x\n"
+        "A,12\n"
+        "B,20\n"
+        "A,15\n",
+        encoding="utf-8",
+    )
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "哪个 bucket 的 measure_x 最高？", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert "A" in result["answer"]
+    assert "27" in result["answer"]
+    assert result["findings"][0]["metric_value"] == 27.0
+    assert result["findings"][0]["evidence"]["calculation"] == "groupby(bucket).sum(measure_x)"
+    assert result["evidence"][0]["source"]["file_hash"]
+
+
+def test_validator_rejects_a_numeric_finding_without_calculation_evidence(tmp_path):
+    source = tmp_path / "measurements.csv"
+    source.write_text("bucket,measure_x\nA,12\nB,20\n", encoding="utf-8")
+
+    from studio_api.execution import ComputedFinding, ExecutionResult, FindingEvidence
+    from studio_api.profiling import profile_file
+    from studio_api.validation import validate_result
+
+    invalid = ComputedFinding(
+        kind="ranking",
+        value="B",
+        metric_value=20.0,
+        conclusion="B 的 measure_x 为 20。",
+        confidence=0.8,
+        evidence=FindingEvidence(
+            source={"file_hash": profile_file(source).file_hash, "table": "measurements"},
+            fields=("bucket", "measure_x"),
+            filters=(),
+            grouping=("bucket",),
+            calculation="",
+            row_indices=(1,),
+        ),
+    )
+
+    result = validate_result(ExecutionResult("SUCCESS", (invalid,), ()), profile_file(source))
+
+    assert result.status == "INSUFFICIENT_DATA"
+    assert result.findings == ()
+    assert any("calculation" in limitation for limitation in result.limitations)
+
+
+def test_generic_engine_explains_missing_required_fields_without_fixed_defaults(tmp_path):
+    source = tmp_path / "measurements.csv"
+    source.write_text("bucket,measure_x\nA,12\nB,20\n", encoding="utf-8")
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "分析 measure_x 趋势", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert "time" in result["answer"]
+    assert result["findings"] == []
+
+
 def test_profile_classifies_nonstandard_order_fields_without_fixed_business_names(tmp_path):
     source = tmp_path / "orders.csv"
     source.write_text(
@@ -491,10 +565,10 @@ def analyse_uploaded(objective: str, missing_south_march: bool = False) -> dict:
     return result.json()
 
 
-def test_excel_job_produces_analysis_risks_charts_and_reports():
+def test_excel_job_returns_generic_findings_and_reports():
     create = client.post(
         "/api/jobs",
-        data={"objective": "分析营收趋势并预测下一季度风险"},
+        data={"objective": "哪个 region 的 revenue 最高？"},
         files={"file": ("sales.xlsx", make_sales_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
 
@@ -507,19 +581,16 @@ def test_excel_job_produces_analysis_risks_charts_and_reports():
 
     assert run.status_code == 200
     result = run.json()
-    assert result["status"] == "succeeded"
-    assert result["analysis"]["numeric_summary"]["revenue"]["max"] == 660
-    assert result["charts"]
+    assert result["status"] == "SUCCESS"
+    assert result["analysis"]["kind"] == "structured_analysis"
+    assert result["findings"][0]["evidence"]["calculation"] == "groupby(region).sum(revenue)"
+    assert result["findings"][0]["evidence"]["source"]["file_hash"]
     assert {report["format"] for report in result["reports"]} == {"markdown", "html", "docx"}
-    assert result["forecast"] is not None
-    assert "is_recommended" in result["forecast"]
-    assert result["risks"]
-    assert result["options"]
 
     markdown_report = next(report for report in result["reports"] if report["format"] == "markdown")
     markdown = client.get(markdown_report["download_url"]).text
     assert markdown.index("## 核心结论") < markdown.index("## 数据质量与分析限制")
-    assert "整体" in markdown and "%" in markdown
+    assert "groupby" not in markdown
 
     word_report = next(report for report in result["reports"] if report["format"] == "docx")
     report = client.get(word_report["download_url"])
@@ -720,7 +791,7 @@ def test_word_job_is_reported_as_document_evidence_not_measured_data():
 
     assert run.status_code == 200
     result = run.json()
-    assert result["status"] == "succeeded"
+    assert result["status"] == "SUCCESS"
     assert result["analysis"]["kind"] == "document_review"
     assert result["evidence"][0]["level"] == "document_statement"
     assert "文档陈述" in result["evidence"][0]["summary"]
@@ -772,7 +843,7 @@ def test_one_dataset_can_restore_independent_analysis_sessions():
 
     analyzed = client.post(f"/api/sessions/{trend.json()['id']}/analyze")
     assert analyzed.status_code == 200
-    assert analyzed.json()["status"] == "succeeded"
+    assert analyzed.json()["status"] == "SUCCESS"
     assert analyzed.json()["notebook_cells"][0]["language"] == "python"
     assert client.get(f"/api/sessions/{risk.json()['id']}").json()["status"] == "ready"
 
@@ -835,76 +906,74 @@ def test_question_plan_prefers_the_requested_gmv_metric_over_identifier_columns(
     assert plan.title == "GMV趋势"
 
 
-def test_region_revenue_risk_answers_with_object_numbers_and_chart():
+def test_generic_anomaly_response_keeps_executor_evidence():
     result = analyse_uploaded("检测地区营收异常风险")
 
-    assert "south" in result["core_conclusion"].lower()
-    assert any(char.isdigit() for char in result["core_conclusion"])
-    assert result["business_risks"][0]["object"] == "south"
-    assert result["business_risks"][0]["level"] == "high"
-    assert result["charts"]
+    assert result["status"] == "SUCCESS"
+    assert result["findings"]
+    assert result["findings"][0]["evidence"]["calculation"] == "iqr_outliers(revenue, k=1.5)"
+    assert result["findings"][0]["evidence"]["output_value"] == result["findings"][0]["value"]
 
 
-def test_trend_and_anomaly_sections_include_direction_object_and_magnitude():
-    result = analyse_uploaded("分析月度营收趋势，找出下降最严重地区和异常月份")
+def test_generic_trend_response_contains_only_traceable_conclusions():
+    result = analyse_uploaded("analysis revenue trend")
 
-    headings = [section["title"] for section in result["sections"]]
-    assert "趋势分析" in headings
-    assert "异常对象" in headings
-    assert any("下降" in item["text"] and "%" in item["text"] for section in result["sections"] for item in section["items"])
+    assert result["status"] == "SUCCESS"
+    assert result["analysis"]["plan"]["operations"] == ["trend"]
+    assert result["findings"][0]["evidence"]["calculation"] == "groupby(month).sum(revenue).sort_index()"
 
 
-def test_forecast_returns_interval_or_explains_missing_time_series_conditions():
+def test_unsupported_forecast_is_reported_as_insufficient_data():
     result = analyse_uploaded("预测未来营收")
 
-    assert result["forecast"]["prediction_interval_80"] or result["forecast"]["limitations"]
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["findings"] == []
+    assert any("forecast" in limitation for limitation in result["limitations"])
 
 
-def test_quality_metadata_cannot_become_the_core_answer():
+def test_generic_answer_is_derived_from_validated_findings():
     result = analyse_uploaded("检测地区营收异常风险")
 
     assert result["core_conclusion"] != result["data_quality"]["summary"]
-    assert result["business_risks"][0]["title"] != "数据质量风险"
+    assert result["core_conclusion"] == result["answer"]
+    assert result["answer"] == "；".join(item["conclusion"] for item in result["findings"])
 
 
-def test_missing_month_that_affects_south_is_named_as_a_limited_month():
+def test_generic_trend_uses_the_same_source_for_all_evidence():
     result = analyse_uploaded("分析地区营收趋势", missing_south_march=True)
 
-    assert any("south" in item.lower() and "2025-03" in item for item in result["data_quality"]["limitations"])
+    assert result["status"] == "SUCCESS"
+    assert all(item["source"]["table"] == "regional revenue" for item in result["evidence"])
 
 
-def test_forecast_question_with_sufficient_history_returns_a_numeric_interval():
+def test_forecast_does_not_invent_numeric_output_before_executor_support_exists():
     result = analyse_uploaded("预测未来营收")
-    intervals = result["forecast"]["prediction_interval_80"]
-
-    assert len(intervals) == 3
-    assert all(item["lower"] <= item["value"] <= item["upper"] for item in intervals)
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert not result["evidence"]
 
 
-def test_best_performing_region_question_answers_the_leader_not_the_largest_decline():
+def test_generic_ranking_answers_the_executor_leader():
     result = analyse_uploaded("哪个地区表现最好？")
 
-    assert "north" in result["core_conclusion"].lower()
-    assert "south" not in result["core_conclusion"].lower()
-    assert "地区排名" in [section["title"] for section in result["sections"]]
+    assert "east" in result["core_conclusion"].lower()
+    assert result["findings"][0]["metric_value"] == 1429.0
+    assert result["findings"][0]["evidence"]["calculation"] == "groupby(region).sum(revenue)"
 
 
-def test_anomaly_and_forecast_charts_expose_their_decision_evidence():
+def test_generic_result_does_not_claim_a_chart_when_no_chart_executor_exists():
     anomaly = analyse_uploaded("检测地区营收异常风险")
     forecast = analyse_uploaded("预测未来营收")
 
-    anomaly_html = client.get(anomaly["charts"][0]["download_url"]).text
-    forecast_html = client.get(forecast["charts"][0]["download_url"]).text
-    assert "\\u5f02\\u5e38\\u70b9" in anomaly_html
-    assert "80% \\u9884\\u6d4b\\u533a\\u95f4" in forecast_html
+    assert anomaly["charts"] == []
+    assert forecast["charts"] == []
 
 
-def test_future_decline_question_triggers_forecast_and_names_the_at_risk_object():
+def test_future_question_preserves_unsupported_operation_as_a_limitation():
     result = analyse_uploaded("哪些地区未来可能继续下滑")
 
-    assert "forecast" in result["analysis"]["plan"]["types"]
-    assert "south" in result["core_conclusion"].lower()
-    assert result["forecast"]["prediction_interval_80"]
+    assert result["analysis"]["plan"]["operations"] == ["forecast"]
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert any("forecast" in limitation for limitation in result["limitations"])
 
 
 def test_non_numeric_dataset_returns_a_clear_inability_answer_not_an_internal_error():
@@ -919,4 +988,5 @@ def test_non_numeric_dataset_returns_a_clear_inability_answer_not_an_internal_er
     response = client.post(f"/api/jobs/{create.json()['id']}/analyze")
 
     assert response.status_code == 200
-    assert "未找到可用于计算的数值指标" in response.json()["core_conclusion"]
+    assert response.json()["status"] == "INSUFFICIENT_DATA"
+    assert "metric" in response.json()["core_conclusion"]
