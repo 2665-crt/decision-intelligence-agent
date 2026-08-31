@@ -51,7 +51,11 @@ def analyse_structured(source: Path, objective: str) -> dict:
             "key_metrics": [
                 {
                     "label": finding["kind"],
-                    "value": str(finding["metric_value"]),
+                    "value": (
+                        f"{float(finding['metric_value']) * 100:.2f}%"
+                        if finding["context"].get("metric_kind") == "ratio"
+                        else str(finding["metric_value"])
+                    ),
                     "detail": finding["conclusion"],
                 }
                 for finding in result["findings"]
@@ -99,12 +103,11 @@ def _composite_answer(findings: list[dict], validation_status: str) -> str:
 def _format_composite_anomaly(finding: dict) -> str:
     metric = finding["context"]["metric"]
     value = finding["value"]
-    current = (
-        f"{float(value['current_value']) * 100:.2f}%"
-        if finding["context"].get("metric_kind") == "ratio"
-        else f"{float(value['current_value']):g}"
-    )
-    return f"{metric} {value['period']}：{current}（较上期 {value['change_pct']:+g}%）"
+    if finding["context"].get("metric_kind") == "ratio":
+        current = float(value["current_value"]) * 100
+        preceding = float(value["preceding_value"]) * 100
+        return f"{metric} {value['period']}：{current:.2f}%（上期 {preceding:.2f}%，变化 {current - preceding:+.2f} 个百分点）"
+    return f"{metric} {value['period']}：{float(value['current_value']):g}（较上期 {value['change_pct']:+g}%）"
 
 
 def _format_composite_trend(finding: dict) -> str:

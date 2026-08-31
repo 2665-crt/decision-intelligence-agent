@@ -188,6 +188,9 @@ def _build_composite_plan(
     reason_fields = _select_reason_fields(table.columns) if table is not None else ()
     driver_fields = _select_driver_fields(table.columns) if table is not None else ()
     limitations: list[str] = []
+    requested_range = _period_range_expression(question)
+    if requested_range is not None and requested_range[0] > requested_range[1]:
+        limitations.append("时间范围起始月份晚于结束月份，已拒绝应用该范围过滤。")
     if time_column is None:
         limitations.append("未找到满足语义置信度 >= 0.70 的时间字段；低置信度字段不会用于关键计算。")
     missing_metrics = [metric.name for metric in metrics if metric.missing_fields]
@@ -410,6 +413,7 @@ def _composite_metric_requests(profile: DatasetProfile, question: str) -> tuple[
             requested.append((min(positions), key))
     requested_static = {key for _, key in requested}
     seen_fields: set[str] = set()
+    explicit_fields: list[tuple[int, int, str]] = []
     for table in profile.tables:
         for column in table.columns:
             if (
@@ -419,10 +423,18 @@ def _composite_metric_requests(profile: DatasetProfile, question: str) -> tuple[
                 or _covered_by_static_metric(column.name, requested_static)
             ):
                 continue
-            position = _explicit_field_position(question, column.name)
-            if position >= 0:
-                requested.append((position, f"field:{column.name}"))
+            match = _explicit_field_match(question, column.name)
+            if match is not None:
+                position, length = match
+                explicit_fields.append((position, length, column.name))
                 seen_fields.add(column.name)
+    selected_spans: list[tuple[int, int]] = []
+    for position, length, field_name in sorted(explicit_fields, key=lambda item: (item[0], -item[1])):
+        end = position + length
+        if any(position >= selected_start and end <= selected_end for selected_start, selected_end in selected_spans):
+            continue
+        requested.append((position, f"field:{field_name}"))
+        selected_spans.append((position, end))
     return tuple(key for _, key in sorted(requested))
 
 
@@ -437,30 +449,49 @@ def _covered_by_static_metric(field_name: str, requested: set[str]) -> bool:
     return False
 
 
-def _explicit_field_position(question: str, field_name: str) -> int:
+def _explicit_field_match(question: str, field_name: str) -> tuple[int, int] | None:
     variants = {
         _normalize_field_name(field_name),
         _normalize_field_name(re.sub(r"[（(][^）)]*[）)]", "", field_name)),
     }
-    positions = [_normalize_field_name(question).find(variant) for variant in variants if variant]
-    return min((position for position in positions if position >= 0), default=-1)
+    normalized_question = _normalize_field_name(question)
+    matches = [
+        (position, len(variant))
+        for variant in variants
+        if variant and (position := normalized_question.find(variant)) >= 0
+    ]
+    return min(matches, key=lambda item: (item[0], -item[1])) if matches else None
 
 
 def _requested_period_range(question: str) -> tuple[str | None, str | None]:
-    matches = re.findall(r"(?<!\d)(\d{4})\s*(?:-|/|年)\s*(\d{1,2})(?!\d)", question)
-    if len(matches) < 2:
+    requested_range = _period_range_expression(question)
+    if requested_range is None:
         return None, None
-    months = sorted(f"{int(year):04d}-{int(month):02d}" for year, month in matches[:2] if 1 <= int(month) <= 12)
-    if len(months) != 2:
+    period_start, period_end = requested_range
+    if period_start > period_end:
         return None, None
-    return months[0], months[1]
+    return period_start, period_end
+
+
+def _period_range_expression(question: str) -> tuple[str, str] | None:
+    match = re.search(
+        r"(?<!\d)(\d{4})\s*(?:-|/|年)\s*(\d{1,2})\s*月?\s*(?:到|至)\s*"
+        r"(\d{4})\s*(?:-|/|年)\s*(\d{1,2})\s*月?(?!\d)",
+        question,
+    )
+    if match is None:
+        return None
+    start_year, start_month, end_year, end_month = (int(value) for value in match.groups())
+    if not 1 <= start_month <= 12 or not 1 <= end_month <= 12:
+        return None
+    return f"{start_year:04d}-{start_month:02d}", f"{end_year:04d}-{end_month:02d}"
 
 
 def _has_time_intent(question: str) -> bool:
     normalized_question = _normalize_field_name(question)
     return (
         any(_normalize_field_name(marker) in normalized_question for marker in _COMPOSITE_TIME_MARKERS)
-        or _requested_period_range(question) != (None, None)
+        or _period_range_expression(question) is not None
     )
 
 

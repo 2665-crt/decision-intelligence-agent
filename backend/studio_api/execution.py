@@ -192,8 +192,8 @@ def _composite_reason_findings(
                 )
             )
 
-        driver = _same_period_driver(frame, current_rows, comparison_rows, plan.driver_fields)
-        if driver is not None:
+        drivers = _same_period_drivers(frame, current_rows, comparison_rows, plan.driver_fields)
+        for driver in drivers:
             field_name, comparison, current, change_pct, calculation, row_indices = driver
             findings.append(
                 ComputedFinding(
@@ -223,7 +223,7 @@ def _composite_reason_findings(
                 )
             )
 
-        if not comments and driver is None:
+        if not comments and not drivers:
             row_indices = comparison_rows + current_rows
             findings.append(
                 ComputedFinding(
@@ -262,14 +262,15 @@ def _same_period_comments(
     return tuple(comments)
 
 
-def _same_period_driver(
+def _same_period_drivers(
     frame: pd.DataFrame,
     current_rows: tuple[Any, ...],
     comparison_rows: tuple[Any, ...],
     fields: tuple[str, ...],
-) -> tuple[str, float, float, float, str, tuple[Any, ...]] | None:
+) -> tuple[tuple[str, float, float, float, str, tuple[Any, ...]], ...]:
     if not current_rows or not comparison_rows:
-        return None
+        return ()
+    drivers: list[tuple[str, float, float, float, str, tuple[Any, ...]]] = []
     for field_name in fields:
         current = pd.to_numeric(frame.loc[list(current_rows), field_name], errors="coerce").dropna()
         comparison = pd.to_numeric(frame.loc[list(comparison_rows), field_name], errors="coerce").dropna()
@@ -288,8 +289,8 @@ def _same_period_driver(
         if change_pct is None or abs(change_pct) < 3:
             continue
         row_indices = tuple(comparison.index.tolist()) + tuple(current.index.tolist())
-        return field_name, comparison_value, current_value, change_pct, calculation, row_indices
-    return None
+        drivers.append((field_name, comparison_value, current_value, change_pct, calculation, row_indices))
+    return tuple(drivers)
 
 
 def _aggregate_monthly_metric(
@@ -412,12 +413,23 @@ def _composite_anomaly_findings(
     for item in outliers:
         period = pd.Period(item["period"], freq="M")
         preceding_period = series.values.index[series.values.index.get_loc(period) - 1]
+        if series.metric.kind == "ratio":
+            percentage_point_change = (float(item["current_value"]) - float(item["preceding_value"])) * 100
+            conclusion = (
+                f"{series.metric.name} 在 {item['period']} 的月度汇总值为 {float(item['current_value']) * 100:.2f}%，"
+                f"上期为 {float(item['preceding_value']) * 100:.2f}%，变化 {percentage_point_change:+.2f} 个百分点。"
+            )
+        else:
+            conclusion = (
+                f"{series.metric.name} 在 {item['period']} 的月度汇总值为 {item['current_value']:g}，"
+                f"较上期变化 {item['change_pct']:g}%。"
+            )
         findings.append(
             ComputedFinding(
                 kind="anomaly",
                 value=item,
                 metric_value=item["current_value"],
-                conclusion=f"{series.metric.name} 在 {item['period']} 的月度汇总值为 {item['current_value']:g}，较上期变化 {item['change_pct']:g}%。",
+                conclusion=conclusion,
                 confidence=_composite_confidence(plan, series.metric),
                 evidence=_evidence(
                     plan,

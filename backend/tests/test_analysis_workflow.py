@@ -756,6 +756,26 @@ def test_composite_plan_and_execution_support_any_explicit_high_confidence_numer
     )
 
 
+def test_composite_explicit_metric_matching_prefers_the_longest_field_at_the_same_position(tmp_path):
+    source = tmp_path / "prefixed-metrics.csv"
+    pd.DataFrame(
+        {
+            "月份": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "销量目标": [100, 105, 110, 115, 120, 125],
+            "销量": [90, 95, 100, 105, 110, 115],
+            "成本": [50, 52, 54, 56, 58, 60],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import CompositeAnalysisPlan, build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "按月份分析销量目标和成本趋势。")
+
+    assert isinstance(plan, CompositeAnalysisPlan)
+    assert [metric.name for metric in plan.metrics] == ["销量目标", "成本"]
+
+
 def test_composite_reason_keeps_all_unique_comments_and_a_significant_numeric_clue(tmp_path):
     periods = list(pd.period_range("2025-01", "2025-07", freq="M").astype(str))
     rows = [
@@ -788,6 +808,33 @@ def test_composite_reason_keeps_all_unique_comments_and_a_significant_numeric_cl
     assert drivers[0]["value"]["field"] == "销量"
     assert drivers[0]["value"]["change_pct"] == 200.0
     assert "可能原因线索" in result["answer"] and "同期联动线索" in result["answer"]
+
+
+def test_composite_reason_keeps_every_significant_same_period_driver(tmp_path):
+    source = tmp_path / "all-significant-drivers.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-08", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 105, 106, 300],
+            "营业利润": [20, 20.2, 20.4, 20.6, 20.8, 21, 21.2, 60],
+            "销量": [10, 10, 10, 10, 10, 10, 10, 30],
+            "单价": [10, 10, 10, 10, 10, 10, 10, 20],
+            "成本": [50, 50, 50, 50, 50, 50, 50, 100],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "按期间分析营业收入和营业利润趋势，指出异常月份及可能原因", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    drivers = [finding for finding in result["findings"] if finding["kind"] == "reason_driver"]
+    assert [finding["value"]["field"] for finding in drivers] == ["销量", "单价", "成本"]
+    assert all(finding["evidence"]["row_indices"] == [6, 7] for finding in drivers)
+    assert all("非因果证明" in finding["conclusion"] for finding in drivers)
 
 
 def test_composite_reason_skips_a_zero_baseline_driver_without_failing(tmp_path):
@@ -839,6 +886,57 @@ def test_composite_time_range_filters_before_aggregation_and_is_recorded_in_evid
     assert [point["period"] for point in trend.value] == ["2025-03", "2025-04", "2025-05", "2025-06", "2025-07", "2025-08"]
     assert trend.evidence.filters == ("月份：2025-03 至 2025-08",)
     assert trend.evidence.row_indices == (2, 3, 4, 5, 6, 7)
+
+
+def test_composite_period_comparison_does_not_invent_a_continuous_range(tmp_path):
+    source = tmp_path / "compared-months.csv"
+    frame = pd.DataFrame(
+        {
+            "月份": pd.period_range("2025-01", "2025-10", freq="M").astype(str),
+            "销量": list(range(100, 110)),
+            "成本": list(range(50, 60)),
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "按月份比较 2025-03 和 2025-08 的销量和成本趋势。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+    trend = next(finding for finding in result.findings if finding.kind == "trend" and finding.context["metric"] == "销量")
+
+    assert plan.period_start is None and plan.period_end is None
+    assert [point["period"] for point in trend.value] == list(pd.period_range("2025-01", "2025-10", freq="M").astype(str))
+    assert trend.evidence.filters == ()
+
+
+def test_composite_reverse_period_range_is_rejected_without_reordering_or_filtering(tmp_path):
+    source = tmp_path / "reverse-range.csv"
+    frame = pd.DataFrame(
+        {
+            "月份": pd.period_range("2025-01", "2025-10", freq="M").astype(str),
+            "销量": list(range(100, 110)),
+            "成本": list(range(50, 60)),
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "分析 2025-08 至 2025-03 的销量和成本趋势。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+    trend = next(finding for finding in result.findings if finding.kind == "trend" and finding.context["metric"] == "销量")
+
+    assert plan.period_start is None and plan.period_end is None
+    assert any("起始月份晚于结束月份" in limitation for limitation in plan.limitations)
+    assert [point["period"] for point in trend.value] == list(pd.period_range("2025-01", "2025-10", freq="M").astype(str))
+    assert trend.evidence.filters == ()
 
 
 def test_composite_partial_and_insufficient_results_keep_a_succeeded_task_lifecycle(tmp_path):
@@ -907,7 +1005,23 @@ def test_composite_partial_answer_is_honest_and_margin_anomaly_uses_percentage_d
         tmp_path,
         margin_source,
     )
-    assert "毛利率 2025-07：90.00%" in margin["answer"]
+    margin_anomaly = next(
+        finding
+        for finding in margin["findings"]
+        if finding["kind"] == "anomaly"
+        and finding["context"]["metric"] == "毛利率"
+        and finding["value"].get("period") == "2025-07"
+    )
+    margin_card = next(
+        item
+        for item in margin["key_metrics"]
+        if item["label"] == "anomaly" and item["detail"] == margin_anomaly["conclusion"]
+    )
+
+    assert "毛利率 2025-07：90.00%（上期 30.50%，变化 +59.50 个百分点）" in margin["answer"]
+    assert margin_anomaly["conclusion"] == "毛利率 在 2025-07 的月度汇总值为 90.00%，上期为 30.50%，变化 +59.50 个百分点。"
+    assert margin_card["value"] == "90.00%"
+    assert margin_card["detail"] == margin_anomaly["conclusion"]
 
 
 def test_validator_rejects_unknown_fields_missing_rows_and_mismatched_ratio_formula(tmp_path):
