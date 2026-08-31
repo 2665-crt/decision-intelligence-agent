@@ -43,26 +43,26 @@ _REQUIRED_ROLES = {
 
 _QUESTION_CONCEPTS = {
     "dimension": (
-        (("产品",), ("product", "item", "sku")),
-        (("地区", "区域"), ("region", "area")),
-        (("客户",), ("customer", "client")),
-        (("类别", "分类"), ("category", "type")),
-        (("班级", "组别"), ("class", "cohort", "group")),
+        (("产品",), ("product", "item", "sku", "产品", "商品")),
+        (("地区", "区域"), ("region", "area", "地区", "区域")),
+        (("客户",), ("customer", "client", "客户")),
+        (("类别", "分类"), ("category", "type", "类别", "分类")),
+        (("班级", "组别"), ("class", "cohort", "group", "班级", "组别")),
     ),
     "metric": (
-        (("销售额",), ("sales", "amount", "gmv")),
-        (("销量",), ("sales", "quantity", "volume")),
-        (("利润",), ("profit", "margin")),
-        (("成本",), ("cost",)),
-        (("营收", "收入"), ("revenue", "income")),
-        (("成绩", "分数"), ("score", "grade")),
-        (("错误率",), ("error", "rate")),
-        (("库存",), ("inventory", "stock")),
+        (("销售额",), ("sales_amount", "salesamount", "gmv", "销售额", "销售金额")),
+        (("销量",), ("sales_quantity", "salesquantity", "quantity", "volume", "qty", "销量", "销售量")),
+        (("利润",), ("profit", "margin", "利润")),
+        (("成本",), ("cost", "成本")),
+        (("营收", "收入"), ("revenue", "income", "营收", "收入")),
+        (("成绩", "分数"), ("score", "grade", "成绩", "分数")),
+        (("错误率",), ("error_rate", "errorrate", "错误率")),
+        (("库存",), ("inventory", "stock", "库存")),
     ),
     "time": (
-        (("日期",), ("date", "day", "dt")),
-        (("时间",), ("time", "timestamp", "datetime")),
-        (("月份", "月度"), ("month", "period")),
+        (("日期",), ("date", "day", "dt", "日期")),
+        (("时间",), ("time", "timestamp", "datetime", "时间")),
+        (("月份", "月度"), ("month", "period", "月份", "月度")),
     ),
 }
 
@@ -243,7 +243,9 @@ def _field_question_score(field_name: str, question: str, semantic_role: str | N
 
 
 def _field_tokens(field_name: str) -> set[str]:
-    return {token for token in re.split(r"[^0-9a-z\u4e00-\u9fff]+", field_name.casefold()) if token}
+    normalized = field_name.casefold()
+    parts = [token for token in re.split(r"[^0-9a-z\u4e00-\u9fff]+", normalized) if token]
+    return set(parts) | {normalized, "".join(parts)}
 
 
 def _explicit_concept_tokens(question: str, semantic_role: str) -> set[str]:

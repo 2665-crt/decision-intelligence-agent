@@ -90,6 +90,50 @@ def test_plan_ranks_the_requested_dimension_and_metric(tmp_path):
     }
 
 
+def test_plan_matches_high_confidence_chinese_fields_from_the_question(tmp_path):
+    source = tmp_path / "orders-cn.csv"
+    frame = pd.DataFrame(
+        {
+            "产品": ["A", "B", "A"],
+            "销售额": [12, 20, 15],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "哪个产品销售额最高？")
+
+    assert plan.status == "READY"
+    assert plan.operations == ("ranking",)
+    assert plan.fields == {"dimension": "产品", "metric": "销售额"}
+
+
+def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
+    source = tmp_path / "orders-with-invalid-value.csv"
+    frame = pd.DataFrame(
+        {
+            "product_name": ["A", "A", "A", "A", "A", "B", "B", "B", "B", "B"],
+            "sales_amount": [12, "invalid", 15, 0, 0, 20, 1, 1, 1, 1],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "哪个产品销售额最高？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert result.status == "SUCCESS"
+    assert result.findings[0].value == "A"
+    assert result.findings[0].metric_value == 27.0
+    assert result.findings[0].evidence.row_indices == (0, 2, 3, 4)
+
+
 def test_prediction_without_a_time_field_returns_insufficient_data(tmp_path):
     source = tmp_path / "orders.csv"
     frame = pd.DataFrame(
@@ -200,6 +244,25 @@ def test_question_terms_select_the_requested_metric_among_profile_candidates(tmp
 
     assert plan.status == "READY"
     assert plan.fields == {"dimension": "product_name", "metric": "sales_amount"}
+
+
+def test_sales_volume_question_does_not_use_a_sales_amount_field(tmp_path):
+    source = tmp_path / "orders.csv"
+    frame = pd.DataFrame(
+        {
+            "product_name": ["A", "B", "A"],
+            "sales_amount": [12, 20, 15],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "哪个产品销量最高？")
+
+    assert plan.status == "INSUFFICIENT_DATA"
+    assert plan.fields == {"dimension": "product_name"}
 
 
 def test_question_terms_do_not_fall_back_to_unrequested_business_fields(tmp_path):

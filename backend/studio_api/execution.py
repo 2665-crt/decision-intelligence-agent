@@ -90,7 +90,7 @@ def _execute_ranking(frame: pd.DataFrame, plan: AnalysisPlan) -> tuple[ComputedF
         raise ValueError("排名所需的分组或数值记录不足。")
     leader = grouped.idxmin() if plan.parameters.get("direction") == "ascending" else grouped.idxmax()
     metric_value = float(grouped.loc[leader])
-    row_indices = tuple(frame.index[frame[dimension] == leader].tolist())
+    row_indices = tuple(working.index[working[dimension] == leader].tolist())
     return (
         ComputedFinding(
             kind="ranking",
