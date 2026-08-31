@@ -227,6 +227,37 @@ def test_relationships_return_empty_when_no_normalized_name_or_value_overlap(tmp
     assert discover_relationships(profile_files([first, second])) == []
 
 
+def test_relationships_do_not_merge_different_explicit_identifier_names(tmp_path):
+    accounts = tmp_path / "accounts.csv"
+    groups = tmp_path / "groups.csv"
+    accounts.write_text("account_id\n101\n102\n", encoding="utf-8")
+    groups.write_text("group_id\n101\n102\n", encoding="utf-8")
+
+    from studio_api.profiling import profile_files
+    from studio_api.relationships import discover_relationships
+
+    assert discover_relationships(profile_files([accounts, groups])) == []
+
+
+def test_non_identifier_field_with_id_substring_requires_confirmation(tmp_path):
+    first = tmp_path / "first.csv"
+    second = tmp_path / "second.csv"
+    first.write_text("paid_amount\n10\n20\n", encoding="utf-8")
+    second.write_text("paid_amount\n10\n20\n", encoding="utf-8")
+
+    from studio_api.profiling import profile_files
+    from studio_api.relationships import discover_relationships
+
+    profiles = profile_files([first, second])
+    field = profiles[0].tables[0].columns[0]
+    candidates = discover_relationships(profiles)
+
+    assert field.semantic_role == "metric"
+    assert len(candidates) == 1
+    assert candidates[0].can_auto_use is False
+    assert candidates[0].requires_confirmation is True
+
+
 def test_plan_ranks_the_requested_dimension_and_metric(tmp_path):
     source = tmp_path / "orders.csv"
     frame = pd.DataFrame(

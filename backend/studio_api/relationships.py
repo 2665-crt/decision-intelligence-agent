@@ -133,4 +133,4 @@ def _confidence(left: ColumnProfile, right: ColumnProfile, overlap: float, share
 
 
 def _normalize_field(name: str) -> str:
-    return re.sub(r"[^\\w\\u4e00-\\u9fff]", "", name.casefold())
+    return re.sub(r"[\W_]+", "", name.casefold())

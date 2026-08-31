@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -172,8 +173,7 @@ def _parsed_type(values: pd.Series) -> tuple[str, pd.Series | None]:
 
 
 def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.Series | None, unique_ratio: float, has_complex_values: bool) -> tuple[str, float]:
-    label = name.casefold()
-    identifier_label = any(token in label for token in ("id", "code", "key", "编号", "编码", "序号"))
+    identifier_label = _is_identifier_label(name)
     if parsed_type == "empty":
         return "uncertain", 0.0
     if has_complex_values:
@@ -197,6 +197,15 @@ def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.S
     if median_length >= 30:
         return "text", 0.8
     return "uncertain", 0.5
+
+
+def _is_identifier_label(name: str) -> bool:
+    separated = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+    english_tokens = re.findall(r"[a-z0-9]+", separated.casefold())
+    return (
+        any(token in {"id", "code", "key"} for token in english_tokens)
+        or name.strip().endswith(("编号", "编码", "序号"))
+    )
 
 
 def _is_missing(value: Any) -> bool:
