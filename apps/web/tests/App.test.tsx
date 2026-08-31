@@ -88,6 +88,39 @@ test("shows insufficient data reason without empty analytics modules", () => {
   expect(screen.queryByRole("heading", { name: "业务风险" })).not.toBeInTheDocument();
 });
 
+test("renders every available verified evidence field", () => {
+  render(<ResultPanel tab="结果" session={{
+    id: "evidence-session", dataset_id: "dataset", source_name: "fallback.csv", objective: "找出最大值", title: "最大值", status: "succeeded",
+    intake: { kind: "spreadsheet" }, messages: [], answer: "已找到最大值。", validation_status: "SUCCESS", limitations: [],
+    findings: [{ kind: "ranking", conclusion: "产品 A 为最大值。", evidence: {
+      source: { source_name: "orders.csv", sheet: "销售明细" }, fields: ["产品", "金额"], filters: ["状态 = 已支付"], calculation: "max(金额)", output_value: 120, confidence: 0.91,
+    } }], charts: [], reports: [],
+  } as never} />);
+
+  expect(screen.getByText("来源：orders.csv · 工作表：销售明细")).toBeInTheDocument();
+  expect(screen.getByText("字段：产品、金额")).toBeInTheDocument();
+  expect(screen.getByText("筛选：状态 = 已支付")).toBeInTheDocument();
+  expect(screen.getByText("计算：max(金额)")).toBeInTheDocument();
+  expect(screen.getByText("输出值：120")).toBeInTheDocument();
+  expect(screen.getByText("置信度：0.91")).toBeInTheDocument();
+});
+
+test("omits unavailable optional evidence fields without rendering undefined", () => {
+  render(<ResultPanel tab="结果" session={{
+    id: "sparse-evidence-session", dataset_id: "dataset", source_name: "inventory.csv", objective: "找出最大库存", title: "库存最大值", status: "succeeded",
+    intake: { kind: "spreadsheet" }, messages: [], answer: "SKU-1 库存最高。", validation_status: "SUCCESS", limitations: [],
+    findings: [{ kind: "ranking", conclusion: "SKU-1 库存最高。", evidence: {
+      source: { table: "库存" }, fields: ["sku", "stock"], calculation: "max(stock)",
+    } }], charts: [], reports: [],
+  } as never} />);
+
+  expect(screen.getByText("来源：inventory.csv · 工作表：库存")).toBeInTheDocument();
+  expect(screen.getByText("字段：sku、stock")).toBeInTheDocument();
+  expect(screen.getByText("计算：max(stock)")).toBeInTheDocument();
+  expect(screen.queryByText(/^筛选：/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+});
+
 test("omits the business risk heading when the analysis has no business risks", () => {
   render(<ResultPanel tab="结果" session={{
     id: "trend-session", dataset_id: "dataset", source_name: "financial.xlsx", objective: "分析财务趋势", title: "财务趋势", status: "succeeded",
@@ -120,4 +153,16 @@ test("keeps task tabs readable, scrollable and switchable", () => {
   expect(getComputedStyle(activeTab.closest(".task-tab")!).minWidth).toBe("120px");
   expect(getComputedStyle(activeTab.closest(".task-tab")!).maxWidth).toBe("220px");
   expect(getComputedStyle(activeTab.querySelector(".tab-title")!).textOverflow).toBe("ellipsis");
+});
+
+test("closes a task tab without selecting it", () => {
+  const onClose = vi.fn();
+  const onSelect = vi.fn();
+  render(<TaskTabs activeId="session-1" onClose={onClose} onNew={vi.fn()} onSelect={onSelect} sessions={[
+    { id: "session-1", title: "长标题任务", objective: "一个完整的长问题" },
+  ]} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "关闭 长标题任务" }));
+  expect(onClose).toHaveBeenCalledWith("session-1");
+  expect(onSelect).not.toHaveBeenCalled();
 });
