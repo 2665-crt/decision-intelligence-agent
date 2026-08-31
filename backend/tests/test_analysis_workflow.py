@@ -59,6 +59,248 @@ def test_profile_serializes_nested_json_values_without_failing_unique_measuremen
     assert tags.unique_ratio == 1.0
 
 
+def test_plan_ranks_the_requested_dimension_and_metric(tmp_path):
+    source = tmp_path / "orders.csv"
+    frame = pd.DataFrame(
+        {
+            "product_name": ["A", "B", "A"],
+            "sales_amount": [12, 20, 15],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "哪个产品销售额最高？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.status == "READY"
+    assert plan.operations == ("ranking",)
+    assert plan.fields == {"dimension": "product_name", "metric": "sales_amount"}
+    assert result.status == "SUCCESS"
+    assert result.findings[0].value == "A"
+    assert result.findings[0].metric_value == 27.0
+    assert result.findings[0].evidence.calculation == "groupby(product_name).sum(sales_amount)"
+    assert result.findings[0].evidence.source == {
+        "file_hash": profile.file_hash,
+        "table": profile.tables[0].name,
+    }
+
+
+def test_prediction_without_a_time_field_returns_insufficient_data(tmp_path):
+    source = tmp_path / "orders.csv"
+    frame = pd.DataFrame(
+        {
+            "product_name": ["A", "B", "A"],
+            "sales_amount": [12, 20, 15],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "预测 sales_amount 未来趋势")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.status == "INSUFFICIENT_DATA"
+    assert plan.operations == ("forecast",)
+    assert plan.fields == {"metric": "sales_amount"}
+    assert any("时间字段" in limitation for limitation in plan.limitations)
+    assert result.status == "INSUFFICIENT_DATA"
+    assert result.findings == ()
+
+
+def test_generic_anomaly_question_returns_the_outlier_with_row_evidence(tmp_path):
+    source = tmp_path / "measurements.csv"
+    frame = pd.DataFrame(
+        {
+            "observed_at": pd.date_range("2025-01-01", periods=5).astype(str),
+            "measure_x": [10, 11, 10, 12, 100],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "measure_x 有哪些异常值？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.status == "READY"
+    assert plan.operations == ("anomaly",)
+    assert plan.fields == {"metric": "measure_x", "time": "observed_at"}
+    assert result.status == "SUCCESS"
+    assert result.findings[0].value == 100.0
+    assert result.findings[0].evidence.calculation == "iqr_outliers(measure_x, k=1.5)"
+    assert result.findings[0].evidence.row_indices == (4,)
+
+
+def test_anomaly_without_optional_context_returns_partial_finding(tmp_path):
+    source = tmp_path / "measurements.csv"
+    frame = pd.DataFrame({"measure_x": [10, 11, 10, 12, 100]})
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "measure_x 有哪些异常值？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.status == "PARTIAL"
+    assert any("上下文字段" in limitation for limitation in plan.limitations)
+    assert result.status == "PARTIAL"
+    assert result.findings[0].value == 100.0
+
+
+def test_low_confidence_fields_are_not_used_for_a_ranking(tmp_path):
+    source = tmp_path / "single-order.csv"
+    frame = pd.DataFrame({"product_name": ["A"], "sales_amount": [12]})
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "哪个产品销售额最高？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.status == "INSUFFICIENT_DATA"
+    assert plan.fields == {}
+    assert any("置信度" in limitation for limitation in plan.limitations)
+    assert result.status == "INSUFFICIENT_DATA"
+    assert result.findings == ()
+
+
+def test_question_terms_select_the_requested_metric_among_profile_candidates(tmp_path):
+    source = tmp_path / "orders.csv"
+    frame = pd.DataFrame(
+        {
+            "product_name": ["A", "B", "A"],
+            "sales_amount": [12, 20, 15],
+            "unit_cost": [4, 7, 5],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "哪个产品销售额最高？")
+
+    assert plan.status == "READY"
+    assert plan.fields == {"dimension": "product_name", "metric": "sales_amount"}
+
+
+def test_question_terms_do_not_fall_back_to_unrequested_business_fields(tmp_path):
+    source = tmp_path / "regional.csv"
+    frame = pd.DataFrame(
+        {
+            "month": ["2025-01-01", "2025-02-01", "2025-03-01"],
+            "region": ["north", "south", "north"],
+            "revenue": [12, 20, 15],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(profile_file(source), "哪个产品利润最高？")
+
+    assert plan.status == "INSUFFICIENT_DATA"
+    assert plan.fields == {}
+
+
+def test_generic_trend_uses_the_profile_selected_time_and_metric(tmp_path):
+    source = tmp_path / "series.csv"
+    frame = pd.DataFrame(
+        {
+            "dt": ["2025-01-01", "2025-01-02", "2025-01-03"],
+            "value_x": [3, 5, 4],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "value_x 随 dt 的趋势如何？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.fields == {"time": "dt", "metric": "value_x"}
+    assert result.status == "SUCCESS"
+    assert result.findings[0].value == [
+        {"time": "2025-01-01", "value": 3.0},
+        {"time": "2025-01-02", "value": 5.0},
+        {"time": "2025-01-03", "value": 4.0},
+    ]
+    assert result.findings[0].evidence.calculation == "groupby(dt).sum(value_x).sort_index()"
+
+
+def test_generic_group_comparison_uses_mean_by_requested_dimension(tmp_path):
+    source = tmp_path / "scores.csv"
+    frame = pd.DataFrame(
+        {
+            "cohort": ["blue", "blue", "red", "red"],
+            "score_value": [8, 12, 15, 25],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "比较 cohort 的 score_value 差异")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.operations == ("group_comparison",)
+    assert plan.fields == {"dimension": "cohort", "metric": "score_value"}
+    assert result.findings[0].value == [
+        {"group": "red", "value": 20.0},
+        {"group": "blue", "value": 10.0},
+    ]
+    assert result.findings[0].evidence.calculation == "groupby(cohort).mean(score_value)"
+
+
+def test_generic_correlation_uses_two_requested_metrics(tmp_path):
+    source = tmp_path / "paired.csv"
+    frame = pd.DataFrame(
+        {
+            "value_x": [1, 2, 3, 4],
+            "value_y": [2, 4, 6, 8],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "value_x 与 value_y 是否相关？")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert plan.operations == ("correlation",)
+    assert plan.fields == {"metric": "value_x", "secondary_metric": "value_y"}
+    assert result.findings[0].value == 1.0
+    assert result.findings[0].evidence.calculation == "pearson_correlation(value_x, value_y)"
+
+
 def make_sales_workbook() -> bytes:
     workbook = Workbook()
     sheet = workbook.active
