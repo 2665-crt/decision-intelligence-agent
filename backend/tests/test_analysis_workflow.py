@@ -631,6 +631,93 @@ def test_composite_execution_reports_insufficient_monthly_evidence_for_short_ano
     assert any("有效相邻变化不足四个" in limitation and "零基期" in limitation for limitation in result.limitations)
 
 
+def test_composite_engine_uses_planned_remark_as_same_period_reason_clue(tmp_path):
+    source = tmp_path / "remarked-finance.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 240],
+            "营业利润": [15, 15.1, 15.2, 15.3, 15.4, 36],
+            "备注": ["正常经营", "正常经营", "正常经营", "正常经营", "正常经营", "临时大额订单确认"],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "按期间分析营业收入和营业利润趋势，指出异常月份及可能原因", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    clue = next(item for item in result["findings"] if item["kind"] == "reason_comment")
+    assert clue["value"]["period"] == "2025-06"
+    assert clue["value"]["text"] == "临时大额订单确认"
+    assert clue["value"]["source_row"] == 5
+    assert clue["evidence"]["row_indices"] == [5]
+    assert "可能原因线索" in result["answer"]
+    assert "因果证明" in result["answer"]
+
+
+def test_composite_engine_reports_same_period_driver_co_movement_with_values_and_source(tmp_path):
+    source = tmp_path / "driver-finance.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 240],
+            "营业利润": [15, 15.1, 15.2, 15.3, 15.4, 36],
+            "销量": [10, 10, 10, 10, 10, 24],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "按期间分析营业收入和营业利润趋势，指出异常月份及可能原因", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    clue = next(item for item in result["findings"] if item["kind"] == "reason_driver")
+    assert clue["value"] == {
+        "period": "2025-06",
+        "field": "销量",
+        "comparison_value": 10.0,
+        "current_value": 24.0,
+        "change_pct": 140.0,
+        "source_rows": [4, 5],
+    }
+    assert clue["evidence"]["calculation"] == "monthly_sum(销量); monthly_percent_change(销量)"
+    assert clue["evidence"]["row_indices"] == [4, 5]
+    assert "同期联动线索" in result["answer"]
+    assert "因果证明" in result["answer"]
+
+
+def test_composite_engine_states_fields_cannot_determine_cause_without_reason_evidence(tmp_path):
+    source = tmp_path / "no-reason-finance.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 240],
+            "营业利润": [15, 15.1, 15.2, 15.3, 15.4, 36],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "按期间分析营业收入和营业利润趋势，指出异常月份及可能原因", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    clue = next(item for item in result["findings"] if item["kind"] == "reason_unavailable")
+    assert clue["value"]["period"] == "2025-06"
+    assert clue["evidence"]["row_indices"] == [4, 5]
+    assert "可用字段无法确定原因" in result["answer"]
+    assert "导致" not in result["answer"]
+
+
 def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
     source = tmp_path / "orders-with-invalid-value.csv"
     frame = pd.DataFrame(

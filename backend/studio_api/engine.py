@@ -5,7 +5,7 @@ from pathlib import Path
 from docx import Document
 
 from .execution import execute_plan
-from .planning import build_plan
+from .planning import CompositeAnalysisPlan, build_plan
 from .profiling import profile_file, read_tables
 from .validation import validate_result
 
@@ -21,7 +21,11 @@ def run(job: dict, directory: Path, source: Path | None = None) -> dict:
         result = analyse_structured(source, job["objective"])
     result["notebook_cells"] = notebook_cells(job["intake"]["kind"], job["objective"])
     result["validation_status"] = result.pop("status")
-    result["status"] = "succeeded"
+    composite = result.get("analysis", {}).get("plan", {}).get("kind") == "composite"
+    if composite:
+        result["status"] = {"SUCCESS": "succeeded", "PARTIAL": "partial", "INSUFFICIENT_DATA": "insufficient_data"}[result["validation_status"]]
+    else:
+        result["status"] = "succeeded"
     return result
 
 
@@ -37,20 +41,13 @@ def analyse_structured(source: Path, objective: str) -> dict:
     plan = build_plan(profile, objective)
     validated = validate_result(execute_plan(tables, plan), profile)
     result = validated.to_dict()
+    plan_details = _plan_details(plan)
     result.update(
         {
             "analysis": {
                 "kind": "structured_analysis",
                 "profile": profile.to_dict(),
-                "plan": {
-                    "question": plan.question,
-                    "status": plan.status,
-                    "table": plan.table,
-                    "operations": list(plan.operations),
-                    "fields": plan.fields,
-                    "aggregation": plan.aggregation,
-                    "parameters": plan.parameters,
-                },
+                "plan": plan_details,
             },
             "core_conclusion": result["answer"],
             "key_metrics": [
@@ -71,6 +68,34 @@ def analyse_structured(source: Path, objective: str) -> dict:
         }
     )
     return result
+
+
+def _plan_details(plan: object) -> dict:
+    if isinstance(plan, CompositeAnalysisPlan):
+        return {
+            "kind": "composite",
+            "question": plan.question,
+            "status": plan.status,
+            "table": plan.table,
+            "operations": list(plan.operations),
+            "time_field": plan.time_field,
+            "metrics": [
+                {"name": metric.name, "kind": metric.kind, "fields": metric.fields, "formula": metric.formula}
+                for metric in plan.metrics
+            ],
+            "reason_fields": list(plan.reason_fields),
+            "driver_fields": list(plan.driver_fields),
+        }
+    return {
+        "kind": "single",
+        "question": plan.question,
+        "status": plan.status,
+        "table": plan.table,
+        "operations": list(plan.operations),
+        "fields": plan.fields,
+        "aggregation": plan.aggregation,
+        "parameters": plan.parameters,
+    }
 
 
 def analyse_document(source: Path, objective: str) -> dict:

@@ -44,6 +44,7 @@ class CompositeAnalysisPlan:
     operations: tuple[str, ...]
     metrics: tuple[MetricAnalysisPlan, ...]
     reason_fields: tuple[str, ...]
+    driver_fields: tuple[str, ...]
     limitations: tuple[str, ...]
 
 
@@ -113,6 +114,7 @@ _COMPOSITE_METRICS = {
 _COMPOSITE_TIME_MARKERS = ("期间", "日期", "时间", "月份", "月度", "date", "time", "month", "period")
 _REASON_EVIDENCE_MARKERS = ("原因", "理由", "备注", "说明", "证据", "reason", "evidence", "note", "comment")
 _REASON_FIELD_ALIASES = ("备注", "说明", "原因", "note", "comment", "reason", "description")
+_DRIVER_FIELD_ALIASES = ("费用", "成本", "支出", "销量", "数量", "单价", "价格", "expense", "cost", "quantity", "volume", "price")
 _RATE_OR_GROWTH_MARKERS = ("率", "占比", "比例", "百分比", "增长", "同比", "环比", "rate", "margin", "ratio", "growth", "percent", "yoy", "mom")
 
 
@@ -181,6 +183,7 @@ def _build_composite_plan(
 ) -> CompositeAnalysisPlan:
     table, time_column, metrics = _select_composite_table(profile.tables, requested_metrics, question)
     reason_fields = _select_reason_fields(table.columns) if table is not None else ()
+    driver_fields = _select_driver_fields(table.columns) if table is not None else ()
     limitations: list[str] = []
     if time_column is None:
         limitations.append("未找到满足语义置信度 >= 0.70 的时间字段；低置信度字段不会用于关键计算。")
@@ -205,6 +208,7 @@ def _build_composite_plan(
         operations=operations,
         metrics=tuple(metrics),
         reason_fields=reason_fields,
+        driver_fields=driver_fields,
         limitations=tuple(limitations),
     )
 
@@ -330,6 +334,16 @@ def _select_reason_fields(columns: list[ColumnProfile]) -> tuple[str, ...]:
         if column.confidence >= MIN_SEMANTIC_CONFIDENCE
         and column.semantic_role in {"dimension", "text"}
         and _field_alias_score(column.name, _REASON_FIELD_ALIASES) > 0
+    )
+
+
+def _select_driver_fields(columns: list[ColumnProfile]) -> tuple[str, ...]:
+    return tuple(
+        column.name
+        for column in columns
+        if column.confidence >= MIN_SEMANTIC_CONFIDENCE
+        and column.semantic_role == "metric"
+        and _field_alias_score(column.name, _DRIVER_FIELD_ALIASES) > 0
     )
 
 

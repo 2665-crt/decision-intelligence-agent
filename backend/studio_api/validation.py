@@ -70,7 +70,7 @@ def _validate_finding(
 ) -> tuple[dict[str, Any] | None, str | None]:
     evidence = finding.evidence
     source = evidence.source
-    if source.get("file_hash") != expected_hash or source.get("table") not in table_names:
+    if source.get("file_hash") != expected_hash or not source.get("table") or source.get("table") not in table_names:
         return None, "结论的源文件或数据表证据无效，已拒绝展示。"
     if not evidence.fields:
         return None, "结论缺少参与字段证据，已拒绝展示。"
@@ -82,6 +82,13 @@ def _validate_finding(
         return None, "数值结论包含无效 output value，已拒绝展示。"
     if not _is_finite_number(finding.confidence):
         return None, "结论置信度无效，已拒绝展示。"
+    if not evidence.row_indices:
+        return None, "结论缺少源数据行证据，已拒绝展示。"
+    if finding.context.get("metric_kind") == "ratio":
+        if not {"numerator", "denominator"} <= set(finding.context.get("metric_fields", ())):
+            return None, "派生比率结论缺少分子或分母字段证据，已拒绝展示。"
+        if not str(finding.context.get("formula", "")).strip():
+            return None, "派生比率结论缺少公式证据，已拒绝展示。"
     return (
         {
             "source": _serialize(source),
@@ -93,6 +100,7 @@ def _validate_finding(
             "metric_value": _serialize(finding.metric_value),
             "confidence": finding.confidence,
             "row_indices": _serialize(list(evidence.row_indices)),
+            "formula": finding.context.get("formula"),
         },
         None,
     )
