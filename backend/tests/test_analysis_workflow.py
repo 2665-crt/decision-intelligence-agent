@@ -35,7 +35,8 @@ def test_generic_engine_returns_a_traceable_direct_ranking_answer(tmp_path):
         source,
     )
 
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "SUCCESS"
     assert "A" in result["answer"]
     assert "27" in result["answer"]
     assert result["findings"][0]["metric_value"] == 27.0
@@ -86,7 +87,8 @@ def test_generic_engine_explains_missing_required_fields_without_fixed_defaults(
         source,
     )
 
-    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "INSUFFICIENT_DATA"
     assert "time" in result["answer"]
     assert result["findings"] == []
 
@@ -581,7 +583,8 @@ def test_excel_job_returns_generic_findings_and_reports():
 
     assert run.status_code == 200
     result = run.json()
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "SUCCESS"
     assert result["analysis"]["kind"] == "structured_analysis"
     assert result["findings"][0]["evidence"]["calculation"] == "groupby(region).sum(revenue)"
     assert result["findings"][0]["evidence"]["source"]["file_hash"]
@@ -791,7 +794,8 @@ def test_word_job_is_reported_as_document_evidence_not_measured_data():
 
     assert run.status_code == 200
     result = run.json()
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "SUCCESS"
     assert result["analysis"]["kind"] == "document_review"
     assert result["evidence"][0]["level"] == "document_statement"
     assert "文档陈述" in result["evidence"][0]["summary"]
@@ -843,7 +847,8 @@ def test_one_dataset_can_restore_independent_analysis_sessions():
 
     analyzed = client.post(f"/api/sessions/{trend.json()['id']}/analyze")
     assert analyzed.status_code == 200
-    assert analyzed.json()["status"] == "SUCCESS"
+    assert analyzed.json()["status"] == "succeeded"
+    assert analyzed.json()["validation_status"] == "SUCCESS"
     assert analyzed.json()["notebook_cells"][0]["language"] == "python"
     assert client.get(f"/api/sessions/{risk.json()['id']}").json()["status"] == "ready"
 
@@ -909,7 +914,8 @@ def test_question_plan_prefers_the_requested_gmv_metric_over_identifier_columns(
 def test_generic_anomaly_response_keeps_executor_evidence():
     result = analyse_uploaded("检测地区营收异常风险")
 
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "SUCCESS"
     assert result["findings"]
     assert result["findings"][0]["evidence"]["calculation"] == "iqr_outliers(revenue, k=1.5)"
     assert result["findings"][0]["evidence"]["output_value"] == result["findings"][0]["value"]
@@ -918,7 +924,8 @@ def test_generic_anomaly_response_keeps_executor_evidence():
 def test_generic_trend_response_contains_only_traceable_conclusions():
     result = analyse_uploaded("analysis revenue trend")
 
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "SUCCESS"
     assert result["analysis"]["plan"]["operations"] == ["trend"]
     assert result["findings"][0]["evidence"]["calculation"] == "groupby(month).sum(revenue).sort_index()"
 
@@ -926,7 +933,8 @@ def test_generic_trend_response_contains_only_traceable_conclusions():
 def test_unsupported_forecast_is_reported_as_insufficient_data():
     result = analyse_uploaded("预测未来营收")
 
-    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "INSUFFICIENT_DATA"
     assert result["findings"] == []
     assert any("forecast" in limitation for limitation in result["limitations"])
 
@@ -942,13 +950,15 @@ def test_generic_answer_is_derived_from_validated_findings():
 def test_generic_trend_uses_the_same_source_for_all_evidence():
     result = analyse_uploaded("分析地区营收趋势", missing_south_march=True)
 
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "SUCCESS"
     assert all(item["source"]["table"] == "regional revenue" for item in result["evidence"])
 
 
 def test_forecast_does_not_invent_numeric_output_before_executor_support_exists():
     result = analyse_uploaded("预测未来营收")
-    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "INSUFFICIENT_DATA"
     assert not result["evidence"]
 
 
@@ -972,7 +982,8 @@ def test_future_question_preserves_unsupported_operation_as_a_limitation():
     result = analyse_uploaded("哪些地区未来可能继续下滑")
 
     assert result["analysis"]["plan"]["operations"] == ["forecast"]
-    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["status"] == "succeeded"
+    assert result["validation_status"] == "INSUFFICIENT_DATA"
     assert any("forecast" in limitation for limitation in result["limitations"])
 
 
@@ -988,5 +999,6 @@ def test_non_numeric_dataset_returns_a_clear_inability_answer_not_an_internal_er
     response = client.post(f"/api/jobs/{create.json()['id']}/analyze")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "INSUFFICIENT_DATA"
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["validation_status"] == "INSUFFICIENT_DATA"
     assert "metric" in response.json()["core_conclusion"]

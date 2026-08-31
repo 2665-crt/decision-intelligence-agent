@@ -20,6 +20,8 @@ def run(job: dict, directory: Path, source: Path | None = None) -> dict:
     else:
         result = analyse_structured(source, job["objective"])
     result["notebook_cells"] = notebook_cells(job["intake"]["kind"], job["objective"])
+    result["validation_status"] = result.pop("status")
+    result["status"] = "succeeded"
     return result
 
 
