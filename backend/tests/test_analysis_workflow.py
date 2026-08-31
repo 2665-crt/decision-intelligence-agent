@@ -53,7 +53,8 @@ def test_profile_serializes_nested_json_values_without_failing_unique_measuremen
     profile = profile_file(source)
     tags = next(column for column in profile.tables[0].columns if column.name == "tags")
 
-    assert tags.semantic_role == "text"
+    assert tags.semantic_role == "uncertain"
+    assert tags.confidence < 0.70
     assert tags.samples == ['["north","urgent"]']
     assert tags.unique_ratio == 1.0
 

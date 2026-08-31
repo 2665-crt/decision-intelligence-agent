@@ -167,7 +167,7 @@ def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.S
     if parsed_type == "empty":
         return "uncertain", 0.0
     if has_complex_values:
-        return "text", 0.8
+        return "uncertain", 0.5
     if parsed_type == "datetime":
         return "time", 0.9
     if parsed_type == "numeric":
