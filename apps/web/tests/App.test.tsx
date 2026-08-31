@@ -54,6 +54,40 @@ test("prioritizes a direct answer and keeps data quality collapsed", () => {
   expect(screen.queryByText("低损害方案")).not.toBeInTheDocument();
 });
 
+test("renders only verified generic findings and their evidence before legacy modules", () => {
+  render(<ResultPanel tab="结果" session={{
+    id: "product-session", dataset_id: "dataset", source_name: "orders.csv", objective: "哪个产品销售额最高？", title: "产品销售排名", status: "succeeded",
+    intake: { kind: "spreadsheet", rows: 3, columns: ["product_name", "sales_amount"] }, messages: [],
+    answer: "产品 A 的销售额最高，为 120。", validation_status: "SUCCESS",
+    core_conclusion: "旧的固定结论不应显示。",
+    findings: [{ kind: "ranking", conclusion: "产品 A 的销售额最高，为 120。", confidence: 0.95, evidence: {
+      source: { file_hash: "abc", table: "订单" }, fields: ["product_name", "sales_amount"], filters: [], grouping: ["product_name"], calculation: "groupby(product_name).sum(sales_amount)", output_value: { product_name: "产品 A", sales_amount: 120 }, confidence: 0.95,
+    } }],
+    charts: [], reports: [], limitations: [],
+  } as never} />);
+
+  expect(screen.getByRole("heading", { name: "直接回答" })).toBeInTheDocument();
+  expect(screen.getByText("产品 A 的销售额最高，为 120。", { selector: ".core-conclusion" })).toBeInTheDocument();
+  expect(screen.getByText("结果状态：SUCCESS")).toBeInTheDocument();
+  expect(screen.getByText("字段：product_name、sales_amount")).toBeInTheDocument();
+  expect(screen.getByText("计算：groupby(product_name).sum(sales_amount)")).toBeInTheDocument();
+  expect(screen.queryByText("旧的固定结论不应显示。")).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "业务风险" })).not.toBeInTheDocument();
+});
+
+test("shows insufficient data reason without empty analytics modules", () => {
+  render(<ResultPanel tab="结果" session={{
+    id: "missing-session", dataset_id: "dataset", source_name: "inventory.csv", objective: "预测未来库存", title: "库存预测", status: "succeeded",
+    intake: { kind: "spreadsheet", rows: 3, columns: ["sku", "stock"] }, messages: [],
+    answer: "无法完成此问题：缺少可用时间字段，不能预测。", validation_status: "INSUFFICIENT_DATA", findings: [], evidence: [], limitations: ["缺少可用时间字段，不能预测。"], charts: [], reports: [],
+  } as never} />);
+
+  expect(screen.getByRole("heading", { name: "数据不足" })).toBeInTheDocument();
+  expect(screen.getByText("缺少可用时间字段，不能预测。")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "关键数据" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "业务风险" })).not.toBeInTheDocument();
+});
+
 test("omits the business risk heading when the analysis has no business risks", () => {
   render(<ResultPanel tab="结果" session={{
     id: "trend-session", dataset_id: "dataset", source_name: "financial.xlsx", objective: "分析财务趋势", title: "财务趋势", status: "succeeded",
@@ -74,14 +108,16 @@ test("keeps task tabs readable, scrollable and switchable", () => {
 
   const activeTab = screen.getByRole("tab", { name: "地区营收风险：检测不同地区营收异常风险，并分析月度趋势和未来风险" });
   expect(activeTab).toHaveAttribute("title", "检测不同地区营收异常风险，并分析月度趋势和未来风险");
-  expect(activeTab).toHaveClass("active");
+  expect(activeTab).toHaveAttribute("aria-current", "page");
+  expect(screen.getAllByText(/等待分析/)).toHaveLength(2);
+  expect(activeTab.closest(".task-tab")).toHaveClass("active");
   const tabList = screen.getByRole("tablist", { name: "已打开的分析任务" });
   fireEvent.wheel(tabList, { deltaY: 120 });
   expect(tabList.scrollLeft).toBe(120);
   fireEvent.click(screen.getByRole("button", { name: "全部任务" }));
   fireEvent.click(screen.getByRole("button", { name: "月度营收预测" }));
   expect(selectSession).toHaveBeenCalledWith("forecast-session");
-  expect(getComputedStyle(activeTab).minWidth).toBe("120px");
-  expect(getComputedStyle(activeTab).maxWidth).toBe("220px");
+  expect(getComputedStyle(activeTab.closest(".task-tab")!).minWidth).toBe("120px");
+  expect(getComputedStyle(activeTab.closest(".task-tab")!).maxWidth).toBe("220px");
   expect(getComputedStyle(activeTab.querySelector(".tab-title")!).textOverflow).toBe("ellipsis");
 });
