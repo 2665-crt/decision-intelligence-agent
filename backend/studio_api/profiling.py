@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -132,7 +133,7 @@ def _profile_column(name: str, series: pd.Series) -> ColumnProfile:
     unique_ratio = round(stable_values.nunique(dropna=True) / len(non_null), 4) if len(non_null) else 0.0
     parsed_type, numeric = _parsed_type(stable_values)
     role, confidence = _semantic_role(name, stable_values, parsed_type, numeric, unique_ratio, has_complex_values)
-    samples = stable_values.head(5).tolist()
+    samples = [_stable_value(value) for value in non_null.head(5).tolist()]
     numeric_summary = None
     if numeric is not None and len(numeric):
         numeric_summary = {
@@ -222,7 +223,7 @@ def _stable_value(value: Any) -> Any:
         return None
     if isinstance(value, (list, dict, set, tuple)):
         return json.dumps(_json_compatible(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    if isinstance(value, pd.Timestamp):
+    if isinstance(value, (pd.Timestamp, datetime)):
         return value.isoformat()
     if hasattr(value, "item"):
         return _stable_value(value.item())

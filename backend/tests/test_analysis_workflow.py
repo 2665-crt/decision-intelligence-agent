@@ -575,6 +575,26 @@ def make_sales_workbook() -> bytes:
     return buffer.getvalue()
 
 
+def test_dataset_upload_serializes_excel_datetime_profile_values():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "dated_metrics"
+    sheet.append(["observed_at", "measure_x"])
+    sheet.append([datetime(2025, 1, 1), 10])
+    sheet.append([datetime(2025, 2, 1), 20])
+    buffer = BytesIO()
+    workbook.save(buffer)
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("dated-metrics.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert response.status_code == 201
+    profile = response.json()["intake"]["profile"]
+    assert profile["tables"][0]["columns"][0]["samples"] == ["2025-01-01T00:00:00", "2025-02-01T00:00:00"]
+
+
 def make_regional_revenue_workbook(missing_south_march: bool = False) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
