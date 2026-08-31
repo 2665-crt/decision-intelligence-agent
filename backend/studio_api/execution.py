@@ -215,7 +215,7 @@ def _composite_anomaly_findings(
 ) -> tuple[tuple[ComputedFinding, ...], str | None]:
     changes = _adjacent_changes(series.values)
     if len(changes) < 4:
-        return (), "按月聚合后不足五个期间，无法基于相邻期间变化执行 IQR 异常检测。"
+        return (), "按月聚合后有效相邻变化不足四个（零基期等无法计算环比的期间会被排除），无法基于相邻期间变化执行 IQR 异常检测。"
     change_values = pd.Series([item["change_pct"] for item in changes], dtype="float64")
     first_quartile = float(change_values.quantile(0.25))
     third_quartile = float(change_values.quantile(0.75))

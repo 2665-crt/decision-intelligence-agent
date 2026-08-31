@@ -585,6 +585,26 @@ def test_composite_execution_detects_iqr_anomaly_from_monthly_aggregate_changes(
     assert anomaly.evidence.fields == ("期间", "营业收入")
     assert anomaly.evidence.grouping == ("期间",)
 
+    operating_profit_anomaly = next(
+        finding
+        for finding in result.findings
+        if finding.kind == "anomaly"
+        and finding.context["metric"] == "营业利润"
+        and finding.context["period"] == "2025-07"
+    )
+
+    assert operating_profit_anomaly.value == {
+        "period": "2025-07",
+        "current_value": 120.0,
+        "preceding_value": 37.0,
+        "change_pct": 224.3243,
+    }
+    assert operating_profit_anomaly.context["method"] == "IQR"
+    assert operating_profit_anomaly.context["threshold"]["multiplier"] == 1.5
+    assert operating_profit_anomaly.evidence.calculation == "iqr_outliers(monthly_percent_change(营业利润), k=1.5)"
+    assert operating_profit_anomaly.evidence.fields == ("期间", "营业利润")
+    assert operating_profit_anomaly.evidence.grouping == ("期间",)
+
 
 def test_composite_execution_reports_insufficient_monthly_evidence_for_short_anomaly_series(tmp_path):
     frame = pd.DataFrame(
@@ -608,7 +628,7 @@ def test_composite_execution_reports_insufficient_monthly_evidence_for_short_ano
 
     assert result.status == "PARTIAL"
     assert all(finding.kind == "trend" for finding in result.findings)
-    assert any("不足五个期间" in limitation for limitation in result.limitations)
+    assert any("有效相邻变化不足四个" in limitation and "零基期" in limitation for limitation in result.limitations)
 
 
 def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
