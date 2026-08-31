@@ -309,6 +309,41 @@ def test_plan_matches_high_confidence_chinese_fields_from_the_question(tmp_path)
     assert plan.fields == {"dimension": "产品", "metric": "销售额"}
 
 
+def test_plan_builds_composite_chinese_metric_analysis_from_one_profiled_table(tmp_path):
+    source = tmp_path / "monthly-finance.csv"
+    frame = pd.DataFrame(
+        {
+            "期间": ["2025-01", "2025-02", "2025-03"],
+            "营业收入（万元）": [100, 120, 90],
+            "毛利（万元）": [30, 36, 18],
+            "营业利润（万元）": [15, 18, 6],
+            "备注": ["正常", "正常", "需求回落"],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.planning import CompositeAnalysisPlan, build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(
+        profile_file(source),
+        "按期间分析营业收入、毛利率和营业利润趋势，指出异常期间及可能原因，并引用备注证据。",
+    )
+
+    assert isinstance(plan, CompositeAnalysisPlan)
+    assert plan.table == "monthly-finance"
+    assert plan.time_field == "期间"
+    assert plan.operations == ("trend", "anomaly", "reason_evidence")
+    assert len(plan.metrics) == 3
+    assert not hasattr(plan, "metric")
+    assert [(metric.name, metric.kind, metric.fields) for metric in plan.metrics] == [
+        ("营业收入", "direct", {"metric": "营业收入（万元）"}),
+        ("毛利率", "ratio", {"numerator": "毛利（万元）", "denominator": "营业收入（万元）"}),
+        ("营业利润", "direct", {"metric": "营业利润（万元）"}),
+    ]
+    assert plan.metrics[1].formula == "sum(毛利（万元）) / sum(营业收入（万元）)"
+
+
 def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
     source = tmp_path / "orders-with-invalid-value.csv"
     frame = pd.DataFrame(

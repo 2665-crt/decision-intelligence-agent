@@ -23,6 +23,29 @@ class AnalysisPlan:
     limitations: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class MetricAnalysisPlan:
+    name: str
+    kind: str
+    fields: dict[str, str]
+    field_confidences: dict[str, float]
+    formula: str | None
+    missing_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompositeAnalysisPlan:
+    question: str
+    status: str
+    file_hash: str
+    table: str | None
+    time_field: str | None
+    time_confidence: float | None
+    operations: tuple[str, ...]
+    metrics: tuple[MetricAnalysisPlan, ...]
+    limitations: tuple[str, ...]
+
+
 _OPERATION_MARKERS = (
     ("forecast", ("预测", "未来", "forecast", "predict")),
     ("correlation", ("相关", "关联", "correlation", "correlate")),
@@ -66,8 +89,36 @@ _QUESTION_CONCEPTS = {
     ),
 }
 
+_COMPOSITE_METRICS = {
+    "revenue": {
+        "name": "营业收入",
+        "kind": "direct",
+        "aliases": ("营业收入", "主营业务收入", "营收", "收入", "revenue", "income"),
+    },
+    "gross_margin": {
+        "name": "毛利率",
+        "kind": "ratio",
+        "aliases": ("毛利率", "毛利率", "gross margin", "gross_margin", "margin rate"),
+        "numerator_aliases": ("毛利", "毛利额", "gross profit"),
+        "denominator_aliases": ("营业收入", "主营业务收入", "营收", "收入", "revenue", "income"),
+    },
+    "operating_profit": {
+        "name": "营业利润",
+        "kind": "direct",
+        "aliases": ("营业利润", "经营利润", "operating profit", "operating_profit"),
+    },
+}
 
-def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan:
+_COMPOSITE_TIME_MARKERS = ("期间", "日期", "时间", "月份", "月度", "date", "time", "month", "period")
+_REASON_EVIDENCE_MARKERS = ("原因", "理由", "备注", "说明", "证据", "reason", "evidence", "note", "comment")
+
+
+def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan | CompositeAnalysisPlan:
+    composite_request = _composite_metric_requests(question)
+    composite_operations = _composite_operations(question)
+    if len(composite_request) > 1 and _has_time_intent(question) and composite_operations:
+        return _build_composite_plan(profile, question, composite_request, composite_operations)
+
     operation = _detect_operation(question)
     if operation is None:
         return AnalysisPlan(
@@ -117,6 +168,188 @@ def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan:
         parameters={"direction": _ranking_direction(question)} if operation == "ranking" else {},
         limitations=tuple(limitations),
     )
+
+
+def _build_composite_plan(
+    profile: DatasetProfile,
+    question: str,
+    requested_metrics: tuple[str, ...],
+    operations: tuple[str, ...],
+) -> CompositeAnalysisPlan:
+    table, time_column, metrics = _select_composite_table(profile.tables, requested_metrics, question)
+    limitations: list[str] = []
+    if time_column is None:
+        limitations.append("未找到满足语义置信度 >= 0.70 的时间字段；低置信度字段不会用于关键计算。")
+    missing_metrics = [metric.name for metric in metrics if metric.missing_fields]
+    if missing_metrics:
+        limitations.append("未找到请求指标所需的高置信度字段：" + "、".join(missing_metrics) + "。")
+    if table is None or not any(not metric.missing_fields for metric in metrics) or time_column is None:
+        status = "INSUFFICIENT_DATA"
+    elif missing_metrics:
+        status = "PARTIAL"
+    else:
+        status = "READY"
+    return CompositeAnalysisPlan(
+        question=question,
+        status=status,
+        file_hash=profile.file_hash,
+        table=table.name if table is not None else None,
+        time_field=time_column.name if time_column is not None else None,
+        time_confidence=time_column.confidence if time_column is not None else None,
+        operations=operations,
+        metrics=tuple(metrics),
+        limitations=tuple(limitations),
+    )
+
+
+def _select_composite_table(
+    tables: list[TableProfile], requested_metrics: tuple[str, ...], question: str
+) -> tuple[TableProfile | None, ColumnProfile | None, list[MetricAnalysisPlan]]:
+    candidates: list[tuple[int, int, TableProfile, ColumnProfile | None, list[MetricAnalysisPlan]]] = []
+    for table in tables:
+        time_column = _select_composite_time(table.columns, question)
+        metrics = [_build_metric_plan(table.columns, request) for request in requested_metrics]
+        complete = sum(not metric.missing_fields for metric in metrics)
+        candidates.append((complete, int(time_column is not None), table, time_column, metrics))
+    if not candidates:
+        return None, None, [_missing_metric_plan(request) for request in requested_metrics]
+    _, _, table, time_column, metrics = max(
+        candidates,
+        key=lambda candidate: (candidate[0], candidate[1], -candidate[2].missing_cells),
+    )
+    return table, time_column, metrics
+
+
+def _build_metric_plan(columns: list[ColumnProfile], request: str) -> MetricAnalysisPlan:
+    definition = _COMPOSITE_METRICS[request]
+    if definition["kind"] == "direct":
+        column = _match_composite_metric(columns, definition["aliases"])
+        if column is None:
+            return _missing_metric_plan(request)
+        return MetricAnalysisPlan(
+            name=definition["name"],
+            kind="direct",
+            fields={"metric": column.name},
+            field_confidences={"metric": column.confidence},
+            formula=None,
+            missing_fields=(),
+        )
+    numerator = _match_composite_metric(columns, definition["numerator_aliases"])
+    denominator = _match_composite_metric(columns, definition["denominator_aliases"])
+    fields: dict[str, str] = {}
+    confidences: dict[str, float] = {}
+    if numerator is not None:
+        fields["numerator"] = numerator.name
+        confidences["numerator"] = numerator.confidence
+    if denominator is not None:
+        fields["denominator"] = denominator.name
+        confidences["denominator"] = denominator.confidence
+    missing = tuple(role for role in ("numerator", "denominator") if role not in fields)
+    formula = None if missing else f"sum({numerator.name}) / sum({denominator.name})"
+    return MetricAnalysisPlan(
+        name=definition["name"],
+        kind="ratio",
+        fields=fields,
+        field_confidences=confidences,
+        formula=formula,
+        missing_fields=missing,
+    )
+
+
+def _missing_metric_plan(request: str) -> MetricAnalysisPlan:
+    definition = _COMPOSITE_METRICS[request]
+    fields = ("metric",) if definition["kind"] == "direct" else ("numerator", "denominator")
+    return MetricAnalysisPlan(
+        name=definition["name"],
+        kind=definition["kind"],
+        fields={},
+        field_confidences={},
+        formula=None,
+        missing_fields=fields,
+    )
+
+
+def _select_composite_time(columns: list[ColumnProfile], question: str) -> ColumnProfile | None:
+    eligible = [
+        column
+        for column in columns
+        if column.semantic_role == "time" and column.confidence >= MIN_SEMANTIC_CONFIDENCE
+    ]
+    if not eligible:
+        return None
+    normalized_question = _normalize_field_name(question)
+    scored = sorted(
+        (
+            (100 if _normalize_field_name(column.name) in normalized_question else 0, position, column)
+            for position, column in enumerate(eligible)
+        ),
+        key=lambda item: (item[0], -item[1]),
+        reverse=True,
+    )
+    if len(scored) == 1 or scored[0][0] > scored[1][0]:
+        return scored[0][2]
+    return None
+
+
+def _match_composite_metric(columns: list[ColumnProfile], aliases: tuple[str, ...]) -> ColumnProfile | None:
+    eligible = [
+        column
+        for column in columns
+        if column.semantic_role == "metric" and column.confidence >= MIN_SEMANTIC_CONFIDENCE
+    ]
+    scored = sorted(
+        ((_field_alias_score(column.name, aliases), position, column) for position, column in enumerate(eligible)),
+        key=lambda item: (item[0], -item[1]),
+        reverse=True,
+    )
+    if not scored or scored[0][0] == 0:
+        return None
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None
+    return scored[0][2]
+
+
+def _field_alias_score(field_name: str, aliases: tuple[str, ...]) -> int:
+    normalized_field = _normalize_field_name(field_name)
+    scores = []
+    for alias in aliases:
+        normalized_alias = _normalize_field_name(alias)
+        if normalized_field == normalized_alias:
+            scores.append(100)
+        elif normalized_alias and normalized_alias in normalized_field:
+            scores.append(50 + len(normalized_alias))
+    return max(scores, default=0)
+
+
+def _normalize_field_name(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _composite_metric_requests(question: str) -> tuple[str, ...]:
+    normalized_question = _normalize_field_name(question)
+    requested: list[tuple[int, str]] = []
+    for key, definition in _COMPOSITE_METRICS.items():
+        positions = [normalized_question.find(_normalize_field_name(alias)) for alias in definition["aliases"]]
+        positions = [position for position in positions if position >= 0]
+        if positions:
+            requested.append((min(positions), key))
+    return tuple(key for _, key in sorted(requested))
+
+
+def _has_time_intent(question: str) -> bool:
+    normalized_question = _normalize_field_name(question)
+    return any(_normalize_field_name(marker) in normalized_question for marker in _COMPOSITE_TIME_MARKERS)
+
+
+def _composite_operations(question: str) -> tuple[str, ...]:
+    operations = [
+        operation
+        for operation, markers in _OPERATION_MARKERS
+        if operation in {"trend", "anomaly"} and any(marker in question.casefold() for marker in markers)
+    ]
+    if any(marker in question.casefold() for marker in _REASON_EVIDENCE_MARKERS):
+        operations.append("reason_evidence")
+    return tuple(operation for operation in ("trend", "anomaly", "reason_evidence") if operation in operations)
 
 
 def _detect_operation(question: str) -> str | None:
