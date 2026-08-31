@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+from numbers import Integral
 from typing import Any
 
 from .execution import ComputedFinding, ExecutionResult
@@ -32,14 +33,14 @@ class ValidatedResult:
 
 
 def validate_result(result: ExecutionResult, profile: DatasetProfile) -> ValidatedResult:
-    table_names = {table.name for table in profile.tables}
+    tables = {table.name: table for table in profile.tables}
     findings: list[dict[str, Any]] = []
     evidence_items: list[dict[str, Any]] = []
     limitations = list(result.limitations)
     rejected = 0
 
     for finding in result.findings:
-        evidence, reason = _validate_finding(finding, profile.file_hash, table_names)
+        evidence, reason = _validate_finding(finding, profile.file_hash, tables)
         if reason:
             rejected += 1
             limitations.append(reason)
@@ -66,14 +67,20 @@ def validate_result(result: ExecutionResult, profile: DatasetProfile) -> Validat
 
 
 def _validate_finding(
-    finding: ComputedFinding, expected_hash: str, table_names: set[str]
+    finding: ComputedFinding, expected_hash: str, tables: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, str | None]:
     evidence = finding.evidence
     source = evidence.source
-    if source.get("file_hash") != expected_hash or not source.get("table") or source.get("table") not in table_names:
+    table_name = source.get("table")
+    if source.get("file_hash") != expected_hash or not table_name or table_name not in tables:
         return None, "结论的源文件或数据表证据无效，已拒绝展示。"
+    table = tables[table_name]
+    table_fields = {column.name for column in table.columns}
     if not evidence.fields:
         return None, "结论缺少参与字段证据，已拒绝展示。"
+    unknown_fields = (set(evidence.fields) | set(evidence.grouping)) - table_fields
+    if unknown_fields:
+        return None, "结论引用了不属于源表字段的证据，已拒绝展示：" + "、".join(sorted(unknown_fields))
     if not str(evidence.calculation).strip():
         return None, "数值结论缺少 calculation（计算表达式）证据，已拒绝展示。"
     if finding.value is None:
@@ -84,11 +91,27 @@ def _validate_finding(
         return None, "结论置信度无效，已拒绝展示。"
     if not evidence.row_indices:
         return None, "结论缺少源数据行证据，已拒绝展示。"
+    if any(
+        isinstance(row_index, bool)
+        or not isinstance(row_index, Integral)
+        or row_index < 0
+        or row_index >= table.row_count
+        for row_index in evidence.row_indices
+    ):
+        return None, "结论引用的源数据行不存在，已拒绝展示。"
     if finding.context.get("metric_kind") == "ratio":
-        if not {"numerator", "denominator"} <= set(finding.context.get("metric_fields", ())):
+        metric_fields = finding.context.get("metric_fields")
+        if not isinstance(metric_fields, dict) or not {"numerator", "denominator"} <= set(metric_fields):
             return None, "派生比率结论缺少分子或分母字段证据，已拒绝展示。"
-        if not str(finding.context.get("formula", "")).strip():
+        numerator = metric_fields["numerator"]
+        denominator = metric_fields["denominator"]
+        if numerator not in table_fields or denominator not in table_fields or not {numerator, denominator} <= set(evidence.fields):
+            return None, "派生比率公式的分子/分母字段不属于实际证据字段，已拒绝展示。"
+        formula = str(finding.context.get("formula", "")).strip()
+        if not formula:
             return None, "派生比率结论缺少公式证据，已拒绝展示。"
+        if formula != f"sum({numerator}) / sum({denominator})":
+            return None, "派生比率公式未对应真实分子/分母字段，已拒绝展示。"
     return (
         {
             "source": _serialize(source),

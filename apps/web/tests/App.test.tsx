@@ -94,6 +94,7 @@ test("renders every available verified evidence field", () => {
     intake: { kind: "spreadsheet" }, messages: [], answer: "已找到最大值。", validation_status: "SUCCESS", limitations: [],
     findings: [{ kind: "ranking", conclusion: "产品 A 为最大值。", evidence: {
       source: { source_name: "orders.csv", sheet: "销售明细" }, fields: ["产品", "金额"], filters: ["状态 = 已支付"], calculation: "max(金额)", output_value: 120, confidence: 0.91,
+      formula: "sum(金额)", row_indices: [2, 5],
     } }], charts: [], reports: [],
   } as never} />);
 
@@ -101,6 +102,8 @@ test("renders every available verified evidence field", () => {
   expect(screen.getByText("字段：产品、金额")).toBeInTheDocument();
   expect(screen.getByText("筛选：状态 = 已支付")).toBeInTheDocument();
   expect(screen.getByText("计算：max(金额)")).toBeInTheDocument();
+  expect(screen.getByText("派生公式：sum(金额)")).toBeInTheDocument();
+  expect(screen.getByText("来源行：2、5")).toBeInTheDocument();
   expect(screen.getByText("输出值：120")).toBeInTheDocument();
   expect(screen.getByText("置信度：0.91")).toBeInTheDocument();
 });

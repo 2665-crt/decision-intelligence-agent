@@ -46,6 +46,8 @@ class CompositeAnalysisPlan:
     reason_fields: tuple[str, ...]
     driver_fields: tuple[str, ...]
     limitations: tuple[str, ...]
+    period_start: str | None = None
+    period_end: str | None = None
 
 
 _OPERATION_MARKERS = (
@@ -119,7 +121,7 @@ _RATE_OR_GROWTH_MARKERS = ("率", "占比", "比例", "百分比", "增长", "�
 
 
 def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan | CompositeAnalysisPlan:
-    composite_request = _composite_metric_requests(question)
+    composite_request = _composite_metric_requests(profile, question)
     composite_operations = _composite_operations(question)
     if len(composite_request) > 1 and _has_time_intent(question) and composite_operations:
         return _build_composite_plan(profile, question, composite_request, composite_operations)
@@ -182,6 +184,7 @@ def _build_composite_plan(
     operations: tuple[str, ...],
 ) -> CompositeAnalysisPlan:
     table, time_column, metrics = _select_composite_table(profile.tables, requested_metrics, question)
+    period_start, period_end = _requested_period_range(question)
     reason_fields = _select_reason_fields(table.columns) if table is not None else ()
     driver_fields = _select_driver_fields(table.columns) if table is not None else ()
     limitations: list[str] = []
@@ -210,6 +213,8 @@ def _build_composite_plan(
         reason_fields=reason_fields,
         driver_fields=driver_fields,
         limitations=tuple(limitations),
+        period_start=period_start,
+        period_end=period_end,
     )
 
 
@@ -232,6 +237,28 @@ def _select_composite_table(
 
 
 def _build_metric_plan(columns: list[ColumnProfile], request: str) -> MetricAnalysisPlan:
+    if request.startswith("field:"):
+        requested_field = request.removeprefix("field:")
+        column = next(
+            (
+                column
+                for column in columns
+                if column.name == requested_field
+                and column.semantic_role == "metric"
+                and column.confidence >= MIN_SEMANTIC_CONFIDENCE
+            ),
+            None,
+        )
+        if column is None:
+            return _missing_metric_plan(request)
+        return MetricAnalysisPlan(
+            name=column.name,
+            kind="direct",
+            fields={"metric": column.name},
+            field_confidences={"metric": column.confidence},
+            formula=None,
+            missing_fields=(),
+        )
     definition = _COMPOSITE_METRICS[request]
     if definition["kind"] == "direct":
         column = _match_composite_metric(columns, definition["aliases"])
@@ -268,6 +295,16 @@ def _build_metric_plan(columns: list[ColumnProfile], request: str) -> MetricAnal
 
 
 def _missing_metric_plan(request: str) -> MetricAnalysisPlan:
+    if request.startswith("field:"):
+        name = request.removeprefix("field:")
+        return MetricAnalysisPlan(
+            name=name,
+            kind="direct",
+            fields={},
+            field_confidences={},
+            formula=None,
+            missing_fields=("metric",),
+        )
     definition = _COMPOSITE_METRICS[request]
     fields = ("metric",) if definition["kind"] == "direct" else ("numerator", "denominator")
     return MetricAnalysisPlan(
@@ -363,7 +400,7 @@ def _normalize_field_name(value: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
 
 
-def _composite_metric_requests(question: str) -> tuple[str, ...]:
+def _composite_metric_requests(profile: DatasetProfile, question: str) -> tuple[str, ...]:
     normalized_question = _normalize_field_name(question)
     requested: list[tuple[int, str]] = []
     for key, definition in _COMPOSITE_METRICS.items():
@@ -371,12 +408,60 @@ def _composite_metric_requests(question: str) -> tuple[str, ...]:
         positions = [position for position in positions if position >= 0]
         if positions:
             requested.append((min(positions), key))
+    requested_static = {key for _, key in requested}
+    seen_fields: set[str] = set()
+    for table in profile.tables:
+        for column in table.columns:
+            if (
+                column.name in seen_fields
+                or column.semantic_role != "metric"
+                or column.confidence < MIN_SEMANTIC_CONFIDENCE
+                or _covered_by_static_metric(column.name, requested_static)
+            ):
+                continue
+            position = _explicit_field_position(question, column.name)
+            if position >= 0:
+                requested.append((position, f"field:{column.name}"))
+                seen_fields.add(column.name)
     return tuple(key for _, key in sorted(requested))
+
+
+def _covered_by_static_metric(field_name: str, requested: set[str]) -> bool:
+    for key in requested:
+        definition = _COMPOSITE_METRICS[key]
+        aliases = definition["aliases"]
+        if _field_alias_score(field_name, aliases) > 0:
+            return True
+        if key == "gross_margin" and _field_alias_score(field_name, definition["numerator_aliases"]) > 0:
+            return True
+    return False
+
+
+def _explicit_field_position(question: str, field_name: str) -> int:
+    variants = {
+        _normalize_field_name(field_name),
+        _normalize_field_name(re.sub(r"[（(][^）)]*[）)]", "", field_name)),
+    }
+    positions = [_normalize_field_name(question).find(variant) for variant in variants if variant]
+    return min((position for position in positions if position >= 0), default=-1)
+
+
+def _requested_period_range(question: str) -> tuple[str | None, str | None]:
+    matches = re.findall(r"(?<!\d)(\d{4})\s*(?:-|/|年)\s*(\d{1,2})(?!\d)", question)
+    if len(matches) < 2:
+        return None, None
+    months = sorted(f"{int(year):04d}-{int(month):02d}" for year, month in matches[:2] if 1 <= int(month) <= 12)
+    if len(months) != 2:
+        return None, None
+    return months[0], months[1]
 
 
 def _has_time_intent(question: str) -> bool:
     normalized_question = _normalize_field_name(question)
-    return any(_normalize_field_name(marker) in normalized_question for marker in _COMPOSITE_TIME_MARKERS)
+    return (
+        any(_normalize_field_name(marker) in normalized_question for marker in _COMPOSITE_TIME_MARKERS)
+        or _requested_period_range(question) != (None, None)
+    )
 
 
 def _composite_operations(question: str) -> tuple[str, ...]:

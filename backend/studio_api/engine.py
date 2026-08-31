@@ -21,11 +21,7 @@ def run(job: dict, directory: Path, source: Path | None = None) -> dict:
         result = analyse_structured(source, job["objective"])
     result["notebook_cells"] = notebook_cells(job["intake"]["kind"], job["objective"])
     result["validation_status"] = result.pop("status")
-    composite = result.get("analysis", {}).get("plan", {}).get("kind") == "composite"
-    if composite:
-        result["status"] = {"SUCCESS": "succeeded", "PARTIAL": "partial", "INSUFFICIENT_DATA": "insufficient_data"}[result["validation_status"]]
-    else:
-        result["status"] = "succeeded"
+    result["status"] = "succeeded"
     return result
 
 
@@ -43,7 +39,7 @@ def analyse_structured(source: Path, objective: str) -> dict:
     result = validated.to_dict()
     plan_details = _plan_details(plan)
     if isinstance(plan, CompositeAnalysisPlan) and result["findings"]:
-        result["answer"] = _composite_answer(result["findings"])
+        result["answer"] = _composite_answer(result["findings"], result["status"])
     result.update(
         {
             "analysis": {
@@ -72,7 +68,7 @@ def analyse_structured(source: Path, objective: str) -> dict:
     return result
 
 
-def _composite_answer(findings: list[dict]) -> str:
+def _composite_answer(findings: list[dict], validation_status: str) -> str:
     trends = [finding for finding in findings if finding["kind"] == "trend"]
     trend_items = [_format_composite_trend(finding) for finding in trends]
     anomalies = [
@@ -80,11 +76,7 @@ def _composite_answer(findings: list[dict]) -> str:
         for finding in findings
         if finding["kind"] == "anomaly" and isinstance(finding["value"], dict) and finding["value"]
     ]
-    anomaly_items = [
-        f"{finding['context']['metric']} {finding['value']['period']}：{finding['value']['current_value']:g}"
-        f"（较上期 {finding['value']['change_pct']:+g}%）"
-        for finding in anomalies
-    ]
+    anomaly_items = [_format_composite_anomaly(finding) for finding in anomalies]
     anomaly_items.extend(
         f"{finding['context']['metric']}：未发现超过 IQR 阈值的月度异常"
         for finding in findings
@@ -96,7 +88,23 @@ def _composite_answer(findings: list[dict]) -> str:
     reason_items = [_format_reason(finding) for finding in reasons]
     if not reason_items:
         reason_items = ["没有与异常月份对应的可验证原因线索。"]
-    return "结论：已完成所请求指标的月度分析。趋势：" + "；".join(trend_items) + "。异常月份：" + "；".join(anomaly_items) + "。原因证据：" + "；".join(reason_items) + "。"
+    completion = (
+        "已完成所请求指标的月度分析"
+        if validation_status == "SUCCESS"
+        else "部分完成所请求的月度分析，以下仅报告已有可验证结果，未完成项见限制"
+    )
+    return "结论：" + completion + "。趋势：" + "；".join(trend_items) + "。异常月份：" + "；".join(anomaly_items) + "。原因证据：" + "；".join(reason_items) + "。"
+
+
+def _format_composite_anomaly(finding: dict) -> str:
+    metric = finding["context"]["metric"]
+    value = finding["value"]
+    current = (
+        f"{float(value['current_value']) * 100:.2f}%"
+        if finding["context"].get("metric_kind") == "ratio"
+        else f"{float(value['current_value']):g}"
+    )
+    return f"{metric} {value['period']}：{current}（较上期 {value['change_pct']:+g}%）"
 
 
 def _format_composite_trend(finding: dict) -> str:
@@ -137,6 +145,8 @@ def _plan_details(plan: object) -> dict:
             ],
             "reason_fields": list(plan.reason_fields),
             "driver_fields": list(plan.driver_fields),
+            "period_start": plan.period_start,
+            "period_end": plan.period_end,
         }
     return {
         "kind": "single",

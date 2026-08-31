@@ -18,6 +18,8 @@ type FindingEvidence = {
   output_value?: unknown;
   metric_value?: unknown;
   confidence?: number;
+  formula?: string;
+  row_indices?: Array<string | number>;
 };
 type Finding = { kind: string; conclusion: string; confidence?: number; evidence?: FindingEvidence };
 type Session = {
@@ -127,7 +129,7 @@ function Evidence({ evidence, sourceName }: { evidence: FindingEvidence; sourceN
   const source = evidence.source ?? {};
   const file = source.file_name ?? source.source_name ?? sourceName;
   const table = source.sheet ?? source.table;
-  return <div className="finding-evidence"><h4>数据证据</h4><ul><li>来源：{file}{table ? ` · 工作表：${table}` : ""}</li>{evidence.fields?.length ? <li>字段：{evidence.fields.join("、")}</li> : null}{evidence.filters?.length ? <li>筛选：{evidence.filters.join("；")}</li> : null}{evidence.grouping?.length ? <li>分组：{evidence.grouping.join("、")}</li> : null}{evidence.calculation ? <li>计算：{evidence.calculation}</li> : null}{evidence.output_value !== undefined ? <li>输出值：{displayValue(evidence.output_value)}</li> : null}{evidence.confidence !== undefined ? <li>置信度：{evidence.confidence}</li> : null}</ul></div>;
+  return <div className="finding-evidence"><h4>数据证据</h4><ul><li>来源：{file}{table ? ` · 工作表：${table}` : ""}</li>{evidence.fields?.length ? <li>字段：{evidence.fields.join("、")}</li> : null}{evidence.filters?.length ? <li>筛选：{evidence.filters.join("；")}</li> : null}{evidence.grouping?.length ? <li>分组：{evidence.grouping.join("、")}</li> : null}{evidence.calculation ? <li>计算：{evidence.calculation}</li> : null}{evidence.formula ? <li>派生公式：{evidence.formula}</li> : null}{evidence.row_indices?.length ? <li>来源行：{evidence.row_indices.join("、")}</li> : null}{evidence.output_value !== undefined ? <li>输出值：{displayValue(evidence.output_value)}</li> : null}{evidence.confidence !== undefined ? <li>置信度：{evidence.confidence}</li> : null}</ul></div>;
 }
 function displayValue(value: unknown) { return typeof value === "string" ? value : JSON.stringify(value); }
 function LegacyResult({ session }: { session: Session }) { return <div className="result-content"><h2>核心结论</h2><p className="core-conclusion">{session.core_conclusion}</p><h3>关键数据</h3><div className="kpi-grid">{session.key_metrics?.map((metric) => <Kpi key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} />)}</div><h3>详细分析</h3>{session.sections?.map((section) => <section className="analysis-section" key={section.title}><h4>{section.title}</h4><ul>{section.items.map((item, index) => <li key={index}>{item.text}</li>)}</ul></section>)}{Boolean(session.business_risks?.length) && <><h3>业务风险</h3>{session.business_risks?.map((risk) => <article className="risk-card" key={risk.title}><div><span className={`risk-level ${risk.level}`}>{risk.level}</span><strong>{risk.title}</strong></div><p>{risk.evidence.join(" ")}</p><small>风险原因：{risk.reason ?? "当前数据未提供可验证的业务原因。"}</small></article>)}</>}<h3>建议</h3>{session.suggestions?.map((option) => <article className="option-card" key={option.name}><strong>{option.name}</strong><p>{option.expected_benefit}</p><small>下一步：{option.next_step}</small></article>)}<details className="data-quality"><summary>数据质量与分析限制</summary><p>{session.data_quality?.summary}</p><ul>{[...(session.data_quality?.limitations ?? []), ...(session.limitations ?? [])].map((item, index) => <li key={index}>{item}</li>)}</ul></details></div>; }

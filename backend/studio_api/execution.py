@@ -119,7 +119,9 @@ def _execute_composite_plan(
     for metric in plan.metrics:
         if metric.missing_fields:
             continue
-        series, limitation = _aggregate_monthly_metric(frame, plan.time_field, metric)
+        series, limitation = _aggregate_monthly_metric(
+            frame, plan.time_field, metric, plan.period_start, plan.period_end
+        )
         if limitation:
             limitations.append(f"{metric.name}：{limitation}")
             continue
@@ -170,9 +172,8 @@ def _composite_reason_findings(
         comparison_rows = tuple(frame.index[comparison_mask].tolist())
         metric_value = float(anomaly.metric_value) if anomaly.metric_value is not None else None
 
-        comment = _same_period_comment(frame, current_rows, plan.reason_fields)
-        if comment is not None:
-            field_name, row_index, text = comment
+        comments = _same_period_comments(frame, current_rows, plan.reason_fields)
+        for field_name, row_index, text in comments:
             findings.append(
                 ComputedFinding(
                     kind="reason_comment",
@@ -190,13 +191,10 @@ def _composite_reason_findings(
                     context={"period": period, "source_type": "comment", "related_metric": anomaly.context.get("metric")},
                 )
             )
-            continue
 
         driver = _same_period_driver(frame, current_rows, comparison_rows, plan.driver_fields)
         if driver is not None:
-            field_name, comparison, current, calculation = driver
-            change_pct = _percent_change(comparison, current)
-            row_indices = comparison_rows + current_rows
+            field_name, comparison, current, change_pct, calculation, row_indices = driver
             findings.append(
                 ComputedFinding(
                     kind="reason_driver",
@@ -224,38 +222,44 @@ def _composite_reason_findings(
                     context={"period": period, "source_type": "same_period_co_movement", "related_metric": anomaly.context.get("metric")},
                 )
             )
-            continue
 
-        row_indices = comparison_rows + current_rows
-        findings.append(
-            ComputedFinding(
-                kind="reason_unavailable",
-                value={"period": period, "source_rows": list(row_indices)},
-                metric_value=metric_value,
-                conclusion=f"{period} 的可用字段无法确定原因：未提供可用备注/说明字段或费用、数量、价格等同期联动字段。",
-                confidence=anomaly.confidence,
-                evidence=_evidence(
-                    plan,
-                    fields=anomaly.evidence.fields,
-                    grouping=(plan.time_field,),
-                    calculation="field_availability_check(reason_or_driver_fields)",
-                    row_indices=row_indices,
-                ),
-                context={"period": period, "source_type": "field_availability", "related_metric": anomaly.context.get("metric")},
+        if not comments and driver is None:
+            row_indices = comparison_rows + current_rows
+            findings.append(
+                ComputedFinding(
+                    kind="reason_unavailable",
+                    value={"period": period, "source_rows": list(row_indices)},
+                    metric_value=metric_value,
+                    conclusion=f"{period} 的可用字段无法确定原因：未提供可用备注/说明字段或有明显变化的费用、数量、价格等同期联动字段。",
+                    confidence=anomaly.confidence,
+                    evidence=_evidence(
+                        plan,
+                        fields=anomaly.evidence.fields,
+                        grouping=(plan.time_field,),
+                        calculation="field_availability_check(reason_or_driver_fields)",
+                        row_indices=row_indices,
+                    ),
+                    context={"period": period, "source_type": "field_availability", "related_metric": anomaly.context.get("metric")},
+                )
             )
-        )
     return tuple(findings)
 
 
-def _same_period_comment(
+def _same_period_comments(
     frame: pd.DataFrame, current_rows: tuple[Any, ...], fields: tuple[str, ...]
-) -> tuple[str, Any, str] | None:
+) -> tuple[tuple[str, Any, str], ...]:
+    comments: list[tuple[str, Any, str]] = []
+    seen: set[tuple[str, str]] = set()
     for field_name in fields:
         for row_index in current_rows:
             value = frame.at[row_index, field_name]
             if pd.notna(value) and str(value).strip():
-                return field_name, row_index, str(value)
-    return None
+                text = str(value).strip()
+                key = (field_name, text)
+                if key not in seen:
+                    seen.add(key)
+                    comments.append((field_name, row_index, text))
+    return tuple(comments)
 
 
 def _same_period_driver(
@@ -263,7 +267,7 @@ def _same_period_driver(
     current_rows: tuple[Any, ...],
     comparison_rows: tuple[Any, ...],
     fields: tuple[str, ...],
-) -> tuple[str, float, float, str] | None:
+) -> tuple[str, float, float, float, str, tuple[Any, ...]] | None:
     if not current_rows or not comparison_rows:
         return None
     for field_name in fields:
@@ -273,13 +277,27 @@ def _same_period_driver(
             continue
         normalized = field_name.casefold()
         if "价" in field_name or "price" in normalized:
-            return field_name, float(comparison.mean()), float(current.mean()), f"monthly_mean({field_name})"
-        return field_name, float(comparison.sum()), float(current.sum()), f"monthly_sum({field_name})"
+            comparison_value = float(comparison.mean())
+            current_value = float(current.mean())
+            calculation = f"monthly_mean({field_name})"
+        else:
+            comparison_value = float(comparison.sum())
+            current_value = float(current.sum())
+            calculation = f"monthly_sum({field_name})"
+        change_pct = _percent_change(comparison_value, current_value)
+        if change_pct is None or abs(change_pct) < 3:
+            continue
+        row_indices = tuple(comparison.index.tolist()) + tuple(current.index.tolist())
+        return field_name, comparison_value, current_value, change_pct, calculation, row_indices
     return None
 
 
 def _aggregate_monthly_metric(
-    frame: pd.DataFrame, time: str, metric: MetricAnalysisPlan
+    frame: pd.DataFrame,
+    time: str,
+    metric: MetricAnalysisPlan,
+    period_start: str | None,
+    period_end: str | None,
 ) -> tuple[_CompositeSeries | None, str | None]:
     source_fields = tuple(metric.fields.values())
     working = pd.DataFrame({time: pd.to_datetime(frame[time], errors="coerce")}, index=frame.index)
@@ -289,6 +307,12 @@ def _aggregate_monthly_metric(
     if working.empty:
         return None, "没有可解析的时间和数值记录。"
     working["_period"] = working[time].dt.to_period("M")
+    if period_start is not None:
+        working = working.loc[working["_period"] >= pd.Period(period_start, freq="M")]
+    if period_end is not None:
+        working = working.loc[working["_period"] <= pd.Period(period_end, freq="M")]
+    if working.empty:
+        return None, "指定时间范围内没有可解析的时间和数值记录。"
     period_rows = {
         period: tuple(group.index.tolist()) for period, group in working.groupby("_period", sort=True)
     }
@@ -617,10 +641,18 @@ def _evidence(
     calculation: str,
     row_indices: tuple[Any, ...],
 ) -> FindingEvidence:
+    filters: tuple[str, ...] = ()
+    if isinstance(plan, CompositeAnalysisPlan) and plan.time_field:
+        if plan.period_start is not None and plan.period_end is not None:
+            filters = (f"{plan.time_field}：{plan.period_start} 至 {plan.period_end}",)
+        elif plan.period_start is not None:
+            filters = (f"{plan.time_field} >= {plan.period_start}",)
+        elif plan.period_end is not None:
+            filters = (f"{plan.time_field} <= {plan.period_end}",)
     return FindingEvidence(
         source={"file_hash": plan.file_hash, "table": plan.table or ""},
         fields=fields,
-        filters=(),
+        filters=filters,
         grouping=grouping,
         calculation=calculation,
         row_indices=row_indices,
@@ -642,7 +674,7 @@ def _composite_confidence(plan: CompositeAnalysisPlan, metric: MetricAnalysisPla
 def _composite_metric_context(metric: MetricAnalysisPlan) -> dict[str, Any]:
     return {
         "metric_kind": metric.kind,
-        "metric_fields": tuple(metric.fields),
+        "metric_fields": dict(metric.fields),
         "formula": metric.formula,
     }
 

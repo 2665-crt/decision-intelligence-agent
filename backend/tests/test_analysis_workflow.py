@@ -718,6 +718,236 @@ def test_composite_engine_states_fields_cannot_determine_cause_without_reason_ev
     assert "导致" not in result["answer"]
 
 
+def test_composite_plan_and_execution_support_any_explicit_high_confidence_numeric_metrics(tmp_path):
+    source = tmp_path / "operations.csv"
+    frame = pd.DataFrame(
+        {
+            "月份": pd.period_range("2025-01", "2025-08", freq="M").astype(str),
+            "销量": [100, 102, 104, 106, 108, 300, 112, 114],
+            "成本": [50, 51, 52, 53, 54, 150, 56, 57],
+            "退货金额": [5, 5.2, 5.1, 5.3, 5.4, 30, 5.6, 5.7],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import CompositeAnalysisPlan, build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "按月份分析销量、成本和退货金额趋势，指出异常月份及可能原因。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+
+    assert isinstance(plan, CompositeAnalysisPlan)
+    assert [(metric.name, metric.kind, metric.fields) for metric in plan.metrics] == [
+        ("销量", "direct", {"metric": "销量"}),
+        ("成本", "direct", {"metric": "成本"}),
+        ("退货金额", "direct", {"metric": "退货金额"}),
+    ]
+    assert {finding.context["metric"] for finding in result.findings if finding.kind == "trend"} == {
+        "销量",
+        "成本",
+        "退货金额",
+    }
+    assert all(
+        finding.evidence.calculation == f"monthly_sum({finding.context['metric']})"
+        for finding in result.findings
+        if finding.kind == "trend"
+    )
+
+
+def test_composite_reason_keeps_all_unique_comments_and_a_significant_numeric_clue(tmp_path):
+    periods = list(pd.period_range("2025-01", "2025-07", freq="M").astype(str))
+    rows = [
+        {"期间": period, "营业收入": 100 + index, "营业利润": 20 + index, "销量": 8 + index, "备注": "正常"}
+        for index, period in enumerate(periods)
+    ]
+    rows.extend(
+        [
+            {"期间": "2025-08", "营业收入": 100, "营业利润": 30, "销量": 14, "备注": "促销活动"},
+            {"期间": "2025-08", "营业收入": 100, "营业利润": 30, "销量": 14, "备注": "供应调整"},
+            {"期间": "2025-08", "营业收入": 100, "营业利润": 30, "销量": 14, "备注": "促销活动"},
+        ]
+    )
+    source = tmp_path / "multi-clue.csv"
+    pd.DataFrame(rows).to_csv(source, index=False)
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "按期间分析营业收入和营业利润趋势，指出异常月份及可能原因", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    comments = [finding for finding in result["findings"] if finding["kind"] == "reason_comment"]
+    drivers = [finding for finding in result["findings"] if finding["kind"] == "reason_driver"]
+    assert {finding["value"]["text"] for finding in comments} == {"促销活动", "供应调整"}
+    assert len(comments) == 2
+    assert len(drivers) == 1
+    assert drivers[0]["value"]["field"] == "销量"
+    assert drivers[0]["value"]["change_pct"] == 200.0
+    assert "可能原因线索" in result["answer"] and "同期联动线索" in result["answer"]
+
+
+def test_composite_reason_skips_a_zero_baseline_driver_without_failing(tmp_path):
+    source = tmp_path / "zero-baseline-driver.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-08", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 105, 106, 300],
+            "营业利润": [20, 20.2, 20.4, 20.6, 20.8, 21, 21.2, 60],
+            "销量": [10, 10, 10, 10, 10, 10, 0, 30],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.engine import run
+
+    result = run(
+        {"objective": "按期间分析营业收入和营业利润趋势，指出异常月份及可能原因", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        source,
+    )
+
+    assert result["status"] == "succeeded"
+    assert not any(finding["kind"] == "reason_driver" for finding in result["findings"])
+    assert any(finding["kind"] == "reason_unavailable" for finding in result["findings"])
+
+
+def test_composite_time_range_filters_before_aggregation_and_is_recorded_in_evidence(tmp_path):
+    source = tmp_path / "ranged-metrics.csv"
+    frame = pd.DataFrame(
+        {
+            "月份": pd.period_range("2025-01", "2025-10", freq="M").astype(str),
+            "销量": [900, 800, 100, 101, 102, 103, 104, 105, 700, 600],
+            "成本": [450, 400, 50, 51, 52, 53, 54, 55, 350, 300],
+        }
+    )
+    frame.to_csv(source, index=False)
+
+    from studio_api.execution import execute_plan
+    from studio_api.planning import build_plan
+    from studio_api.profiling import profile_file
+
+    profile = profile_file(source)
+    plan = build_plan(profile, "分析 2025-03 至 2025-08 的销量和成本趋势并识别异常。")
+    result = execute_plan({profile.tables[0].name: frame}, plan)
+    trend = next(finding for finding in result.findings if finding.kind == "trend" and finding.context["metric"] == "销量")
+
+    assert plan.period_start == "2025-03"
+    assert plan.period_end == "2025-08"
+    assert [point["period"] for point in trend.value] == ["2025-03", "2025-04", "2025-05", "2025-06", "2025-07", "2025-08"]
+    assert trend.evidence.filters == ("月份：2025-03 至 2025-08",)
+    assert trend.evidence.row_indices == (2, 3, 4, 5, 6, 7)
+
+
+def test_composite_partial_and_insufficient_results_keep_a_succeeded_task_lifecycle(tmp_path):
+    from studio_api.engine import run
+
+    partial_source = tmp_path / "partial.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 105],
+            "营业利润": [20, 21, 22, 23, 24, 25],
+        }
+    ).to_csv(partial_source, index=False)
+    partial = run(
+        {"objective": "按期间分析营业收入、毛利率和营业利润趋势，识别异常。", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        partial_source,
+    )
+
+    insufficient_source = tmp_path / "insufficient.csv"
+    pd.DataFrame({"营业收入": [100, 110], "营业利润": [20, 22]}).to_csv(insufficient_source, index=False)
+    insufficient = run(
+        {"objective": "按月份分析营业收入和营业利润趋势。", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        insufficient_source,
+    )
+
+    assert partial["status"] == "succeeded"
+    assert partial["validation_status"] == "PARTIAL"
+    assert insufficient["status"] == "succeeded"
+    assert insufficient["validation_status"] == "INSUFFICIENT_DATA"
+
+
+def test_composite_partial_answer_is_honest_and_margin_anomaly_uses_percentage_display(tmp_path):
+    from studio_api.engine import run
+
+    partial_source = tmp_path / "partial-answer.csv"
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-06", freq="M").astype(str),
+            "营业收入": [100, 101, 102, 103, 104, 105],
+            "营业利润": [20, 21, 22, 23, 24, 25],
+        }
+    ).to_csv(partial_source, index=False)
+    partial = run(
+        {"objective": "按期间分析营业收入、毛利率和营业利润趋势，识别异常。", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        partial_source,
+    )
+    assert "部分完成" in partial["answer"]
+    assert "已完成所请求指标" not in partial["answer"]
+
+    margin_source = tmp_path / "margin-anomaly.csv"
+    revenues = [100, 101, 102, 103, 104, 105, 106, 107]
+    margin_rates = [0.30, 0.301, 0.302, 0.303, 0.304, 0.305, 0.90, 0.307]
+    pd.DataFrame(
+        {
+            "期间": pd.period_range("2025-01", "2025-08", freq="M").astype(str),
+            "营业收入": revenues,
+            "毛利": [revenue * rate for revenue, rate in zip(revenues, margin_rates)],
+            "营业利润": [20, 21, 22, 23, 24, 25, 26, 27],
+        }
+    ).to_csv(margin_source, index=False)
+    margin = run(
+        {"objective": "按期间分析营业收入、毛利率和营业利润趋势，识别异常。", "intake": {"kind": "spreadsheet"}},
+        tmp_path,
+        margin_source,
+    )
+    assert "毛利率 2025-07：90.00%" in margin["answer"]
+
+
+def test_validator_rejects_unknown_fields_missing_rows_and_mismatched_ratio_formula(tmp_path):
+    source = tmp_path / "validation-source.csv"
+    source.write_text("bucket,measure_x,profit,sales\nA,12,3,10\nB,20,4,10\n", encoding="utf-8")
+
+    from studio_api.execution import ComputedFinding, ExecutionResult, FindingEvidence
+    from studio_api.profiling import profile_file
+    from studio_api.validation import validate_result
+
+    profile = profile_file(source)
+    evidence_source = {"file_hash": profile.file_hash, "table": profile.tables[0].name}
+    unknown_field = ComputedFinding(
+        kind="ranking", value="B", metric_value=20.0, conclusion="错误字段。", confidence=0.8,
+        evidence=FindingEvidence(evidence_source, ("bucket", "invented"), (), ("bucket",), "max(invented)", (1,)),
+    )
+    missing_row = ComputedFinding(
+        kind="ranking", value="B", metric_value=20.0, conclusion="错误行。", confidence=0.8,
+        evidence=FindingEvidence(evidence_source, ("bucket", "measure_x"), (), ("bucket",), "max(measure_x)", (99,)),
+    )
+    mismatched_formula = ComputedFinding(
+        kind="trend", value=[{"period": "2025-01", "value": 0.3}], metric_value=0.3,
+        conclusion="错误公式。", confidence=0.8,
+        evidence=FindingEvidence(evidence_source, ("profit", "sales"), (), (), "monthly_sum(profit) / monthly_sum(sales)", (0, 1)),
+        context={
+            "metric_kind": "ratio",
+            "metric_fields": {"numerator": "profit", "denominator": "sales"},
+            "formula": "sum(measure_x) / sum(sales)",
+        },
+    )
+
+    validated = validate_result(ExecutionResult("SUCCESS", (unknown_field, missing_row, mismatched_formula), ()), profile)
+
+    assert validated.status == "INSUFFICIENT_DATA"
+    assert validated.findings == ()
+    assert any("源表字段" in limitation for limitation in validated.limitations)
+    assert any("源数据行" in limitation for limitation in validated.limitations)
+    assert any("分子/分母字段" in limitation for limitation in validated.limitations)
+
+
 def test_ranking_evidence_excludes_rows_rejected_by_numeric_conversion(tmp_path):
     source = tmp_path / "orders-with-invalid-value.csv"
     frame = pd.DataFrame(
