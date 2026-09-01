@@ -32,7 +32,7 @@ def test_registry_groups_models_by_provider_and_gateway_uses_simulation():
         analysis_result={"answer": "营业收入上升", "findings": [{"conclusion": "2025 年上升"}]},
     )
 
-    assert response.content == "已基于受控分析结果：营业收入上升"
+    assert response.content == "[VERIFIED] 已基于受控分析结果：营业收入上升"
     assert response.provider == "simulated"
 
 
@@ -50,6 +50,26 @@ def test_openai_compatible_adapter_normalizes_chat_completion_endpoint():
 
     assert OpenAICompatibleProvider("openai", "https://api.openai.com/v1", "key").endpoint == "https://api.openai.com/v1/chat/completions"
     assert OpenAICompatibleProvider("deepseek", "https://api.deepseek.com", "key").endpoint == "https://api.deepseek.com/chat/completions"
+
+
+def test_openai_compatible_adapter_converts_malformed_json_to_provider_error(monkeypatch):
+    from studio_api.llm import openai_compatible
+    from studio_api.llm.openai_compatible import OpenAICompatibleProvider
+
+    class InvalidJsonResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return b"{not-json"
+
+    monkeypatch.setattr(openai_compatible, "urlopen", lambda *_args, **_kwargs: InvalidJsonResponse())
+
+    with pytest.raises(ProviderError, match="模型服务返回内容格式无效"):
+        OpenAICompatibleProvider("openai", "https://example.test", "test-key").chat([], "test-model")
 
 
 def test_config_builds_only_adapters_with_a_local_key(tmp_path):

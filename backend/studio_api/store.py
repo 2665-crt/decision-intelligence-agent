@@ -132,6 +132,13 @@ def list_sessions(dataset_id: str | None = None, search: str = "") -> list[dict]
     return sorted(sessions, key=lambda item: item["updated_at"], reverse=True)
 
 
+def list_session_page(offset: int, limit: int, search: str = "") -> dict:
+    sessions = list_sessions(search=search)
+    items = sessions[offset : offset + limit]
+    next_offset = offset + len(items)
+    return {"items": items, "next_offset": next_offset, "has_more": next_offset < len(sessions)}
+
+
 def delete_session(session_id: str) -> None:
     directory = session_dir(session_id)
     if not directory.exists():

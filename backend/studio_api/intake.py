@@ -18,7 +18,11 @@ def inspect_file(path: Path) -> dict:
     suffix = path.suffix.lower()
     if suffix in SPREADSHEET_EXTENSIONS:
         profile = profile_file(path)
-        first_table = profile.tables[0] if profile.tables else None
+        first_table = max(
+            profile.tables,
+            key=lambda table: (table.row_count * len(table.columns), table.row_count, len(table.columns)),
+            default=None,
+        )
         return {
             "kind": "spreadsheet",
             "rows": first_table.row_count if first_table else 0,

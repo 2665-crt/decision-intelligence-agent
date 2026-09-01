@@ -10,7 +10,7 @@ from openpyxl import Workbook
 
 from studio_api.app import app
 from studio_api.answering import analyse_spreadsheet
-from studio_api.intake import read_spreadsheet
+from studio_api.intake import inspect_file, read_spreadsheet
 from studio_api.questioning import plan_question
 
 
@@ -40,8 +40,78 @@ def test_generic_engine_returns_a_traceable_direct_ranking_answer(tmp_path):
     assert "A" in result["answer"]
     assert "27" in result["answer"]
     assert result["findings"][0]["metric_value"] == 27.0
+    assert result["findings"][0]["evidence"]["output_value"] == {"bucket": "A", "aggregate": 27.0}
     assert result["findings"][0]["evidence"]["calculation"] == "groupby(bucket).sum(measure_x)"
     assert result["evidence"][0]["source"]["file_hash"]
+
+
+def test_structured_trend_returns_one_chart_spec_per_requested_metric(tmp_path):
+    from studio_api.engine import run
+
+    source = write_multi_metric_financial_workbook(tmp_path)
+    result = run(
+        {
+            "objective": "分析 2024-01 到 2025-12 的营业收入、毛利率和营业利润趋势",
+            "intake": {"kind": "spreadsheet"},
+        },
+        tmp_path,
+        source,
+    )
+
+    specs = result["chart_specs"]
+    assert [spec["series"][0]["name"] for spec in specs] == ["营业收入", "毛利率", "营业利润"]
+    assert all(spec["type"] == "line" for spec in specs)
+    assert all(spec["series"][0]["points"] for spec in specs)
+
+
+def test_upload_intake_summarizes_the_same_largest_data_table_as_analysis(tmp_path):
+    workbook = Workbook()
+    overview = workbook.active
+    overview.title = "财务概览"
+    overview.append(["项目", "数值"])
+    overview.append(["营业收入", 120])
+    detail = workbook.create_sheet("经营明细")
+    detail.append(["月份", "区域", "营业收入"])
+    for index in range(12):
+        detail.append([f"2025-{index + 1:02d}", "华东", 100 + index])
+    source = tmp_path / "multi-sheet.xlsx"
+    workbook.save(source)
+
+    intake = inspect_file(source)
+
+    assert intake["rows"] == 12
+    assert intake["columns"] == ["月份", "区域", "营业收入"]
+
+
+def test_short_chinese_metric_trend_uses_monthly_composite_analysis(tmp_path):
+    from studio_api.engine import run
+
+    source = write_multi_metric_financial_workbook(tmp_path)
+    result = run({"objective": "分析营业收入趋势", "intake": {"kind": "spreadsheet"}}, tmp_path, source)
+
+    assert result["validation_status"] == "SUCCESS"
+    assert result["analysis"]["plan"]["kind"] == "composite"
+    assert result["findings"][0]["kind"] == "trend"
+    assert "。。" not in result["answer"]
+
+
+def test_group_comparison_returns_a_complete_category_bar_spec():
+    from studio_api.charting import build_chart_specs
+
+    specs = build_chart_specs(
+        [
+            {
+                "kind": "group_comparison",
+                "value": [{"group": "华东", "value": 120}, {"group": "华南", "value": 90}],
+                "metric_value": 120,
+                "context": {"metric": "营业收入"},
+                "evidence": {"fields": ["区域", "营业收入"]},
+            }
+        ]
+    )
+
+    assert specs[0]["type"] == "bar"
+    assert specs[0]["series"][0]["points"] == [{"x": "华东", "y": 120.0}, {"x": "华南", "y": 90.0}]
 
 
 def test_validator_rejects_a_numeric_finding_without_calculation_evidence(tmp_path):
@@ -477,7 +547,7 @@ def test_composite_plan_keeps_only_high_confidence_reason_evidence_fields_and_re
     assert any("备注/说明/原因证据字段" in limitation for limitation in without_notes.limitations)
 
 
-def test_composite_planning_requires_multiple_metrics_and_keeps_legacy_plan_for_simple_questions(tmp_path):
+def test_composite_planning_uses_monthly_analysis_for_explicit_metric_trends(tmp_path):
     source = tmp_path / "financial.csv"
     pd.DataFrame(
         {
@@ -488,16 +558,40 @@ def test_composite_planning_requires_multiple_metrics_and_keeps_legacy_plan_for_
         }
     ).to_csv(source, index=False)
 
-    from studio_api.planning import AnalysisPlan, CompositeAnalysisPlan, build_plan
+    from studio_api.planning import CompositeAnalysisPlan, build_plan
     from studio_api.profiling import profile_file
 
     profile = profile_file(source)
     no_explicit_time = build_plan(profile, "分析营业收入、营业利润趋势并识别异常。")
     simple = build_plan(profile, "分析营业收入趋势")
 
-    assert isinstance(no_explicit_time, AnalysisPlan)
-    assert not isinstance(no_explicit_time, CompositeAnalysisPlan)
-    assert isinstance(simple, AnalysisPlan)
+    assert isinstance(no_explicit_time, CompositeAnalysisPlan)
+    assert isinstance(simple, CompositeAnalysisPlan)
+
+
+def test_composite_plan_supports_one_explicit_generic_metric_with_time_range_and_evidence_request(tmp_path):
+    source = tmp_path / "toll.csv"
+    pd.DataFrame(
+        {
+            "data_month": pd.period_range("2022-01", "2023-01", freq="M").astype(str),
+            "opma_section_id": ["G03213717"] * 13,
+            "total_fee": [100, 102, 101, 103, 105, 104, 106, 300, 107, 108, 109, 110, 111],
+        }
+    ).to_csv(source, index=False)
+
+    from studio_api.planning import CompositeAnalysisPlan, build_plan
+    from studio_api.profiling import profile_file
+
+    plan = build_plan(
+        profile_file(source),
+        "分析 2022年1月到2023年1月各路段总通行费用（total_fee）的趋势，指出异常月份及可能原因，并引用数据证据。",
+    )
+
+    assert isinstance(plan, CompositeAnalysisPlan)
+    assert plan.time_field == "data_month"
+    assert plan.operations == ("trend", "anomaly", "reason_evidence")
+    assert [(metric.name, metric.fields) for metric in plan.metrics] == [("total_fee", {"metric": "total_fee"})]
+    assert (plan.period_start, plan.period_end) == ("2022-01", "2023-01")
 
 
 def test_composite_execution_aggregates_monthly_metrics_and_ratio_before_trend_calculation(tmp_path):
@@ -1827,6 +1921,55 @@ def test_one_dataset_can_restore_independent_analysis_sessions():
     assert client.get(f"/api/sessions/{copied.json()['id']}").status_code == 404
 
 
+def test_session_page_returns_requested_slice_without_changing_list_endpoint(tmp_path, monkeypatch):
+    from studio_api import store
+
+    monkeypatch.setattr(store, "ROOT", tmp_path)
+    uploaded = client.post(
+        "/api/datasets",
+        files={"file": ("sales.xlsx", make_sales_workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    dataset_id = uploaded.json()["id"]
+    created = [
+        client.post("/api/sessions", json={"dataset_id": dataset_id, "objective": f"分析营收趋势 {index}"}).json()
+        for index in range(3)
+    ]
+
+    page = client.get("/api/sessions/page?offset=0&limit=2")
+
+    assert page.status_code == 200
+    assert [item["id"] for item in page.json()["items"]] == [created[2]["id"], created[1]["id"]]
+    assert page.json()["next_offset"] == 2
+    assert page.json()["has_more"] is True
+    assert len(client.get("/api/sessions").json()) == 3
+
+
+def test_session_analysis_persists_datetime_values_from_a_generic_excel_table(tmp_path, monkeypatch):
+    from studio_api import store
+
+    monkeypatch.setattr(store, "ROOT", tmp_path)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["data_month", "section_id", "total_fee"])
+    for month, fee in enumerate([100, 102, 101, 103, 500, 104], start=1):
+        sheet.append([datetime(2022, month, 1), "G03213717", fee])
+    content = BytesIO()
+    workbook.save(content)
+
+    uploaded = client.post(
+        "/api/datasets",
+        files={"file": ("toll.xlsx", content.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    created = client.post("/api/sessions", json={"dataset_id": uploaded.json()["id"], "objective": "检测 total_fee 异常"})
+
+    result = client.post(f"/api/sessions/{created.json()['id']}/analyze")
+
+    assert result.status_code == 200
+    payload = result.json()
+    anomaly = next(item for item in payload["findings"] if item["kind"] == "anomaly")
+    assert isinstance(anomaly["context"]["time"], str)
+
+
 def test_composite_financial_question_returns_all_requested_metrics_with_monthly_evidence_via_api():
     workbook = Workbook()
     sheet = workbook.active
@@ -1946,7 +2089,7 @@ def test_generic_trend_response_contains_only_traceable_conclusions():
     assert result["status"] == "succeeded"
     assert result["validation_status"] == "SUCCESS"
     assert result["analysis"]["plan"]["operations"] == ["trend"]
-    assert result["findings"][0]["evidence"]["calculation"] == "groupby(month).sum(revenue).sort_index()"
+    assert result["findings"][0]["evidence"]["calculation"] == "monthly_sum(revenue)"
 
 
 def test_unsupported_forecast_is_reported_as_insufficient_data():
@@ -2021,3 +2164,23 @@ def test_non_numeric_dataset_returns_a_clear_inability_answer_not_an_internal_er
     assert response.json()["status"] == "succeeded"
     assert response.json()["validation_status"] == "INSUFFICIENT_DATA"
     assert "metric" in response.json()["core_conclusion"]
+
+
+def test_dataset_upload_rejects_a_header_only_csv_with_a_recovery_message():
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("empty.csv", b"month,region,revenue\n", "text/csv")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "文件没有数据行，请补充数据后重新上传。"
+
+
+def test_dataset_upload_does_not_expose_parser_internals_to_users():
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("broken.xlsx", b"not an Excel workbook", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "无法读取该文件，请确认它是可正常打开的 Excel 或 CSV 文件后重试。"

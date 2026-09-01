@@ -5,11 +5,12 @@ from .registry import get_model
 
 
 class LLMGateway:
-    def __init__(self, providers: dict[str, BaseLLMProvider]):
+    def __init__(self, providers: dict[str, BaseLLMProvider], configured_models: dict[str, str] | None = None):
         self.providers = providers
+        self.configured_models = configured_models or {}
 
     def chat(self, *, provider: str, model: str, messages: list[dict[str, str]], tools: list[dict] | None = None, stream: bool = False, analysis_result: dict | None = None) -> ProviderResponse:
-        capability = get_model(provider, model)
+        capability = get_model(provider, model, self.configured_models.get(provider, ""))
         if tools and not capability.supports_tools:
             raise ProviderError("当前模型不支持工具调用，请切换支持工具的模型。")
         if stream and not capability.supports_streaming:

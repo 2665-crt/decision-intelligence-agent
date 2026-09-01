@@ -49,6 +49,9 @@ class ProviderConfigStore:
             for provider, values in self.load().items()
         }
 
+    def configured_models(self) -> dict[str, str]:
+        return {provider: values.get("model", "").strip() for provider, values in self.load().items()}
+
     def build_adapters(self) -> dict:
         from .openai_compatible import OpenAICompatibleProvider
         from .simulated import SimulatedProvider

@@ -41,6 +41,8 @@ class OpenAICompatibleProvider:
             raise ProviderError(f"模型服务返回 HTTP {exc.code}。") from exc
         except (URLError, OSError) as exc:
             raise ConnectionError() from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderError("模型服务返回内容格式无效。") from exc
         try:
             content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:

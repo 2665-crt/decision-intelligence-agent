@@ -69,6 +69,29 @@ def test_ecommerce_product_sales_ranking_runs_the_full_pipeline(tmp_path):
     _assert_traceable_success(profile, plan, execution, validated, "groupby(product_name).sum(sales_amount)")
 
 
+def test_ranking_uses_the_explicit_chinese_product_dimension_not_an_unrequested_region(tmp_path):
+    source = _write_csv(
+        tmp_path,
+        "sales.csv",
+        pd.DataFrame(
+            {
+                "商品": ["A", "B", "C", "D"],
+                "销量": [10, 25, 5, 20],
+                "销售额": [100, 375, 80, 260],
+                "地区": ["华东", "华北", "华东", "华南"],
+            }
+        ),
+    )
+
+    profile, plan, execution, validated = _run_pipeline(source, "按销量对商品进行排名，并给出最高商品和数据证据")
+
+    assert plan.fields == {"dimension": "商品", "metric": "销量"}
+    assert execution.status == "SUCCESS"
+    assert validated.findings[0]["value"] == "B"
+    assert validated.findings[0]["metric_value"] == 25.0
+    assert "商品 中的 B" in validated.answer
+
+
 def test_traffic_congestion_comparison_runs_the_full_pipeline(tmp_path):
     source = _write_csv(
         tmp_path,

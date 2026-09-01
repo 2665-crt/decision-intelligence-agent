@@ -38,16 +38,31 @@ MODEL_REGISTRY: dict[str, dict[str, ModelCapability]] = {
 PROVIDER_NAMES = {"simulated": "本地模拟", "openai": "OpenAI", "deepseek": "DeepSeek", "openai-compatible": "OpenAI Compatible"}
 
 
-def get_model(provider: str, model: str) -> ModelCapability:
+def _configured_model(provider: str, model: str, configured_model: str) -> ModelCapability | None:
+    if provider not in PROVIDER_NAMES or not model or model != configured_model:
+        return None
+    return ModelCapability(model, model, 32768, False, False, False, False)
+
+
+def get_model(provider: str, model: str, configured_model: str = "") -> ModelCapability:
     capability = MODEL_REGISTRY.get(provider, {}).get(model)
+    if capability is None:
+        capability = _configured_model(provider, model, configured_model)
     if capability is None:
         raise ModelNotFoundError()
     return capability
 
 
-def list_models(provider: str) -> list[dict]:
-    return [asdict(item) for item in MODEL_REGISTRY.get(provider, {}).values() if item.visible]
+def list_models(provider: str, configured_model: str = "") -> list[dict]:
+    configured = _configured_model(provider, configured_model, configured_model)
+    models = [configured] if configured and configured_model not in MODEL_REGISTRY.get(provider, {}) else []
+    models.extend(item for item in MODEL_REGISTRY.get(provider, {}).values() if item.visible)
+    return [asdict(item) for item in models]
 
 
-def list_providers() -> list[dict]:
-    return [{"id": provider, "display_name": name, "models": list_models(provider)} for provider, name in PROVIDER_NAMES.items()]
+def list_providers(configured_models: dict[str, str] | None = None) -> list[dict]:
+    configured_models = configured_models or {}
+    return [
+        {"id": provider, "display_name": name, "models": list_models(provider, configured_models.get(provider, ""))}
+        for provider, name in PROVIDER_NAMES.items()
+    ]

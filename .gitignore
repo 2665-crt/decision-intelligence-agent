@@ -9,3 +9,8 @@ __pycache__/
 apps/web/node_modules/
 apps/web/dist/
 apps/web/*.tsbuildinfo
+.pytest_cache/
+.coverage
+.runtime-*/
+.runtime-*.log
+.vite/

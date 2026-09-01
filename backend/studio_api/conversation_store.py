@@ -137,6 +137,39 @@ class ConversationStore:
                 raise KeyError(conversation_id)
         return self.get_conversation(conversation_id)
 
+    def update_title(self, conversation_id: str, title: str) -> dict:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", (title, _now(), conversation_id)
+            ).rowcount
+            if not updated:
+                raise KeyError(conversation_id)
+        return self.get_conversation(conversation_id)
+
+    def add_file(self, conversation_id: str, dataset_id: str) -> dict:
+        timestamp = _now()
+        with self._connect() as connection:
+            if connection.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
+                raise KeyError(conversation_id)
+            connection.execute(
+                "INSERT OR IGNORE INTO conversation_files VALUES (?, ?, 1, ?)", (conversation_id, dataset_id, timestamp)
+            )
+        state = self.get_analysis_state(conversation_id)
+        file_ids = self.get_conversation(conversation_id)["file_ids"]
+        self.merge_analysis_state(conversation_id, {"active_file_ids": file_ids if state.get("active_file_ids") else [dataset_id]})
+        return self.get_conversation(conversation_id)
+
+    def remove_file(self, conversation_id: str, dataset_id: str) -> bool:
+        with self._connect() as connection:
+            if connection.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
+                raise KeyError(conversation_id)
+            removed = connection.execute(
+                "DELETE FROM conversation_files WHERE conversation_id = ? AND dataset_id = ?", (conversation_id, dataset_id)
+            ).rowcount
+        if removed:
+            self.merge_analysis_state(conversation_id, {"active_file_ids": self.get_conversation(conversation_id)["file_ids"]})
+        return bool(removed)
+
     def update_summary(self, conversation_id: str, summary: str) -> None:
         with self._connect() as connection:
             if not connection.execute(

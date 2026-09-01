@@ -6,7 +6,11 @@ import json
 class ContextManager:
     def __init__(self, recent_message_limit: int = 8):
         self.recent_message_limit = recent_message_limit
-        self.system_prompt = "你是数据分析工作台的回答层。仅依据提供的受控分析结果，不虚构数据或执行步骤。"
+        self.system_prompt = (
+            "你是数据分析工作台的回答层。仅依据提供的受控分析结果，不虚构数据、字段、计算或执行步骤。"
+            "引用受控 finding、证据和计算结果时必须标注 VERIFIED；无法由受控结果证明的解释、建议或假设必须标注 UNVERIFIED，"
+            "且不得新增具体数值或声称其已验证。"
+        )
 
     def build(self, conversation: dict, messages: list[dict], state: dict, data_context: dict) -> list[dict[str, str]]:
         recent = messages[-self.recent_message_limit :]

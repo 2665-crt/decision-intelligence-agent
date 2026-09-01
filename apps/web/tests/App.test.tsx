@@ -1,9 +1,20 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { App, ResultPanel, TaskTabs } from "../src/App";
+import { App, request, ResultPanel, TaskTabs } from "../src/App";
 import "../src/styles.css";
 
 afterEach(cleanup);
+
+afterEach(() => vi.unstubAllGlobals());
+
+test("reports a readable error when an API returns plain-text 500", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Internal Server Error", {
+    status: 500,
+    headers: { "Content-Type": "text/plain" },
+  })));
+
+  await expect(request("/api/sessions/example")).rejects.toThrow("服务请求失败（HTTP 500）");
+});
 
 test("requires a dataset and goal before creating an analysis session", () => {
   render(<App />);
@@ -24,6 +35,19 @@ test("accepts TSV and JSON datasets in the upload control", () => {
   expect(screen.getByLabelText("上传数据集")).toHaveAttribute("accept", ".xlsx,.xls,.csv,.tsv,.json,.docx");
 });
 
+test("clears a selected file when the create dialog is cancelled", () => {
+  render(<App />);
+
+  fireEvent.click(screen.getAllByRole("button", { name: "新建分析" })[0]);
+  fireEvent.change(screen.getByLabelText("上传数据集"), { target: { files: [new File(["a"], "stale.csv")] } });
+  expect(screen.getByText("将创建数据集：stale.csv")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "新建分析" })[0]);
+
+  expect(screen.queryByText("将创建数据集：stale.csv")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("选择已有数据集")).not.toBeDisabled();
+});
+
 test("renders a fixed workspace with session history and modular result tabs", () => {
   render(<App />);
 
@@ -33,6 +57,7 @@ test("renders a fixed workspace with session history and modular result tabs", (
   expect(screen.getByRole("tab", { name: "图表" })).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Notebook" })).toBeInTheDocument();
   expect(screen.getByText("选择或新建一个分析任务")).toBeInTheDocument();
+  expect(screen.getByTestId("history-list")).toBeInTheDocument();
 });
 
 test("prioritizes a direct answer and keeps data quality collapsed", () => {
@@ -69,6 +94,8 @@ test("renders only verified generic findings and their evidence before legacy mo
   expect(screen.getByRole("heading", { name: "直接回答" })).toBeInTheDocument();
   expect(screen.getByText("产品 A 的销售额最高，为 120。", { selector: ".core-conclusion" })).toBeInTheDocument();
   expect(screen.getByText("结果状态：SUCCESS")).toBeInTheDocument();
+  expect(screen.getByText("查看数据证据").closest("details")).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText("查看数据证据"));
   expect(screen.getByText("字段：product_name、sales_amount")).toBeInTheDocument();
   expect(screen.getByText("计算：groupby(product_name).sum(sales_amount)")).toBeInTheDocument();
   expect(screen.queryByText("旧的固定结论不应显示。")).not.toBeInTheDocument();
@@ -98,12 +125,18 @@ test("renders every available verified evidence field", () => {
     } }], charts: [], reports: [],
   } as never} />);
 
+  expect(screen.getByText("查看数据证据").closest("details")).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText("查看数据证据"));
   expect(screen.getByText("来源：orders.csv · 工作表：销售明细")).toBeInTheDocument();
   expect(screen.getByText("字段：产品、金额")).toBeInTheDocument();
   expect(screen.getByText("筛选：状态 = 已支付")).toBeInTheDocument();
   expect(screen.getByText("计算：max(金额)")).toBeInTheDocument();
   expect(screen.getByText("派生公式：sum(金额)")).toBeInTheDocument();
+  expect(screen.getByText("查看来源行（2）").closest("details")).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText("查看来源行（2）"));
   expect(screen.getByText("来源行：2、5")).toBeInTheDocument();
+  expect(screen.getByText("查看输出值").closest("details")).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText("查看输出值"));
   expect(screen.getByText("输出值：120")).toBeInTheDocument();
   expect(screen.getByText("置信度：0.91")).toBeInTheDocument();
 });
@@ -117,6 +150,7 @@ test("omits unavailable optional evidence fields without rendering undefined", (
     } }], charts: [], reports: [],
   } as never} />);
 
+  fireEvent.click(screen.getByText("查看数据证据"));
   expect(screen.getByText("来源：inventory.csv · 工作表：库存")).toBeInTheDocument();
   expect(screen.getByText("字段：sku、stock")).toBeInTheDocument();
   expect(screen.getByText("计算：max(stock)")).toBeInTheDocument();
@@ -133,6 +167,20 @@ test("omits the business risk heading when the analysis has no business risks", 
   } as never} />);
 
   expect(screen.queryByRole("heading", { name: "业务风险" })).not.toBeInTheDocument();
+});
+
+test("renders a generated chart spec and explains unavailable charts", () => {
+  const session = {
+    id: "chart-session", dataset_id: "dataset", source_name: "financial.xlsx", objective: "分析营收趋势", title: "营收趋势", status: "succeeded",
+    intake: { kind: "spreadsheet" }, messages: [], answer: "营业收入持续上升。", validation_status: "SUCCESS", findings: [], limitations: [], charts: [], reports: [],
+    chart_specs: [{ id: "revenue", title: "营业收入月度趋势", type: "line", x_label: "期间", y_label: "营业收入", series: [{ name: "营业收入", points: [{ x: "2025-01", y: 100 }, { x: "2025-02", y: 120 }] }], markers: [{ x: "2025-02", label: "异常", kind: "anomaly" }] }],
+  } as never;
+  render(<ResultPanel tab="图表" session={session} />);
+
+  expect(screen.getByRole("heading", { name: "图表" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "营业收入月度趋势" })).toBeInTheDocument();
+  expect(screen.getByLabelText("营业收入月度趋势")).toBeInTheDocument();
+  expect(screen.getByText("异常：2025-02")).toBeInTheDocument();
 });
 
 test("keeps task tabs readable, scrollable and switchable", () => {

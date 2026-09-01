@@ -7,6 +7,13 @@ from studio_api.llm.gateway import LLMGateway
 from studio_api.llm.simulated import SimulatedProvider
 
 
+def test_context_manager_requires_verified_and_unverified_evidence_labels():
+    prompt = ContextManager().system_prompt
+
+    assert "VERIFIED" in prompt
+    assert "UNVERIFIED" in prompt
+
+
 def _runner(conversation: dict, objective: str) -> dict:
     return {
         "answer": f"已计算：{objective}",
@@ -50,13 +57,14 @@ def test_switching_to_error_model_keeps_user_message_and_existing_artifacts(tmp_
     conversation = store.create_conversation("经营趋势", "simulated", "analysis-sim", ["dataset-1"])
     service.send_message(conversation["id"], "分析营业收入趋势")
     store.update_model(conversation["id"], "simulated", "analysis-sim-error")
+    artifact_count = len(store.list_artifacts(conversation["id"]))
 
     failed = service.send_message(conversation["id"], "继续分析")
 
     assert failed["status"] == "failed"
     assert failed["error_code"] == "provider_error"
     assert [item["role"] for item in store.list_messages(conversation["id"])] == ["user", "assistant", "user", "assistant"]
-    assert store.list_artifacts(conversation["id"])
+    assert len(store.list_artifacts(conversation["id"])) == artifact_count + 1
 
 
 def test_context_manager_summarizes_early_messages_without_deleting_them(tmp_path):

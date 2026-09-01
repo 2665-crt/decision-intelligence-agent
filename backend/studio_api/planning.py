@@ -53,7 +53,7 @@ class CompositeAnalysisPlan:
 _OPERATION_MARKERS = (
     ("forecast", ("预测", "未来", "forecast", "predict")),
     ("correlation", ("相关", "关联", "correlation", "correlate")),
-    ("anomaly", ("异常", "离群", "异常值", "anomaly", "outlier")),
+    ("anomaly", ("异常", "离群", "异常值", "波动", "拐点", "anomaly", "outlier")),
     ("ranking", ("最高", "最低", "最好", "最差", "排名", "top", "highest", "lowest", "best", "worst")),
     ("group_comparison", ("比较", "对比", "差异", "compare", "comparison", "difference")),
     ("trend", ("趋势", "走势", "变化", "trend", "over time")),
@@ -113,7 +113,7 @@ _COMPOSITE_METRICS = {
     },
 }
 
-_COMPOSITE_TIME_MARKERS = ("期间", "日期", "时间", "月份", "月度", "date", "time", "month", "period")
+_COMPOSITE_TIME_MARKERS = ("期间", "日期", "时间", "月份", "月度", "趋势", "走势", "变化", "date", "time", "month", "period", "trend")
 _REASON_EVIDENCE_MARKERS = ("原因", "理由", "备注", "说明", "证据", "reason", "evidence", "note", "comment")
 _REASON_FIELD_ALIASES = ("备注", "说明", "原因", "note", "comment", "reason", "description")
 _DRIVER_FIELD_ALIASES = ("费用", "成本", "支出", "销量", "数量", "单价", "价格", "expense", "cost", "quantity", "volume", "price")
@@ -123,7 +123,16 @@ _RATE_OR_GROWTH_MARKERS = ("率", "占比", "比例", "百分比", "增长", "�
 def build_plan(profile: DatasetProfile, question: str) -> AnalysisPlan | CompositeAnalysisPlan:
     composite_request = _composite_metric_requests(profile, question)
     composite_operations = _composite_operations(question)
-    if len(composite_request) > 1 and _has_time_intent(question) and composite_operations:
+    known_metric_is_available = any(
+        not request.startswith("field:")
+        and any(not _build_metric_plan(table.columns, request).missing_fields for table in profile.tables)
+        for request in composite_request
+    )
+    if (
+        composite_request
+        and _has_time_intent(question)
+        and (len(composite_request) > 1 or len(composite_operations) > 1 or known_metric_is_available)
+    ):
         return _build_composite_plan(profile, question, composite_request, composite_operations)
 
     operation = _detect_operation(question)

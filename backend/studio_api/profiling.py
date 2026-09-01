@@ -193,6 +193,8 @@ def _semantic_role(name: str, values: pd.Series, parsed_type: str, numeric: pd.S
     median_length = float(strings.str.len().median()) if len(strings) else 0.0
     if identifier_label:
         return "identifier", 0.85
+    if _is_dimension_label(name) and len(strings) >= 2:
+        return "dimension", 0.85
     if unique_ratio <= 0.8 and len(strings) >= 2:
         return "dimension", 0.8
     if median_length >= 30:
@@ -206,6 +208,30 @@ def _is_identifier_label(name: str) -> bool:
     return (
         any(token in {"id", "code", "key"} for token in english_tokens)
         or name.strip().endswith(("编号", "编码", "序号"))
+    )
+
+
+def _is_dimension_label(name: str) -> bool:
+    normalized = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", name.casefold())
+    return any(
+        token in normalized
+        for token in (
+            "商品",
+            "产品",
+            "地区",
+            "区域",
+            "客户",
+            "类别",
+            "分类",
+            "名称",
+            "product",
+            "item",
+            "region",
+            "area",
+            "customer",
+            "category",
+            "name",
+        )
     )
 
 

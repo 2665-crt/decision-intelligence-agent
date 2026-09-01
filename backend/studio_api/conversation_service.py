@@ -27,6 +27,7 @@ class ConversationService:
         selected_provider = provider or conversation["selected_provider"]
         selected_model = model or conversation["selected_model"]
         self.store.append_message(conversation_id, "user", content, status="completed")
+        result: dict | None = None
         try:
             result = self.analysis_runner(conversation, content)
             state = self.store.get_analysis_state(conversation_id)
@@ -38,9 +39,14 @@ class ConversationService:
                 analysis_result=result,
             )
         except ProviderError as exc:
-            return self.store.append_message(
+            failed = self.store.append_message(
                 conversation_id, "assistant", exc.user_message, selected_provider, selected_model, status="failed", error_code=exc.code
             )
+            if result is not None:
+                artifact = self._save_result(conversation_id, failed["id"], result)
+                self._update_state(conversation_id, content, result, artifact)
+            self._update_summary(conversation_id)
+            return failed
         assistant = self.store.append_message(
             conversation_id, "assistant", response.content, response.provider, response.model, status="completed"
         )

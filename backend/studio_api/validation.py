@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from math import isfinite
 from numbers import Integral
 from typing import Any
@@ -119,7 +120,7 @@ def _validate_finding(
             "filters": list(evidence.filters),
             "grouping": list(evidence.grouping),
             "calculation": evidence.calculation,
-            "output_value": _serialize(finding.value),
+            "output_value": _serialize(_output_value(finding, evidence)),
             "metric_value": _serialize(finding.metric_value),
             "confidence": finding.confidence,
             "row_indices": _serialize(list(evidence.row_indices)),
@@ -136,11 +137,19 @@ def _is_finite_number(value: Any) -> bool:
         return False
 
 
+def _output_value(finding: ComputedFinding, evidence: FindingEvidence) -> Any:
+    if finding.kind == "ranking" and evidence.grouping and finding.metric_value is not None:
+        return {evidence.grouping[0]: finding.value, "aggregate": finding.metric_value}
+    return finding.value
+
+
 def _serialize(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _serialize(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_serialize(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
     if hasattr(value, "item"):
         return _serialize(value.item())
     return value
