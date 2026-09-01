@@ -70,7 +70,7 @@ def _best_table(workbook: pd.ExcelFile) -> pd.DataFrame:
                 continue
             frame = data.copy()
             frame.columns = labels
-            frame = frame.infer_objects(copy=False)
+            frame = frame.infer_objects()
             time_columns = [
                 label
                 for label in labels
@@ -94,7 +94,7 @@ def _best_table(workbook: pd.ExcelFile) -> pd.DataFrame:
         return frame
 
     _, sheet_name, header_row, labels, data = max(candidates, key=lambda candidate: candidate[0])
-    frame = data.copy().infer_objects(copy=False)
+    frame = data.copy().infer_objects()
     frame.columns = labels
     frame = frame.reset_index(drop=True)
     frame.attrs["source_sheet"] = sheet_name

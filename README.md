@@ -51,7 +51,7 @@ pnpm --dir apps/web dev --host 127.0.0.1 --port 5173
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest backend/tests -q
+ .\.venv\Scripts\python.exe -m pytest backend/tests -q --basetemp .pytest-tmp
 pnpm --dir apps/web test --run
 pnpm --dir apps/web build
 git diff --check

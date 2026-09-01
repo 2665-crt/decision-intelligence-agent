@@ -10,7 +10,9 @@ apps/web/node_modules/
 apps/web/dist/
 apps/web/*.tsbuildinfo
 .pytest_cache/
+.pytest-tmp/
 .coverage
 .runtime-*/
 .runtime-*.log
+.dogfood-round*/
 .vite/
