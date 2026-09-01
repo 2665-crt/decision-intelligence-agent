@@ -40,7 +40,12 @@ def _assert_traceable_success(profile, plan, execution, validated, calculation: 
         assert evidence["calculation"] == calculation
         assert evidence["fields"]
         assert evidence["row_indices"]
-        assert evidence["output_value"] == finding["value"]
+        expected_output = (
+            {evidence["grouping"][0]: finding["value"], "aggregate": finding["metric_value"]}
+            if finding["kind"] == "ranking" and evidence["grouping"] and finding["metric_value"] is not None
+            else finding["value"]
+        )
+        assert evidence["output_value"] == expected_output
         assert evidence["metric_value"] == finding["metric_value"]
 
 
@@ -437,5 +442,5 @@ def test_validated_answer_contains_no_numeric_claim_outside_computed_findings(tm
     assert validated.answer == validated.findings[0]["conclusion"]
     assert validated.findings[0]["metric_value"] == 27.0
     assert validated.findings[0]["evidence"]["metric_value"] == 27.0
-    assert validated.findings[0]["evidence"]["output_value"] == "A"
+    assert validated.findings[0]["evidence"]["output_value"] == {"bucket": "A", "aggregate": 27.0}
     _assert_traceable_success(profile, plan, execution, validated, "groupby(bucket).sum(measure_x)")
