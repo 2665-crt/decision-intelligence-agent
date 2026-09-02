@@ -51,7 +51,7 @@ pnpm --dir apps/web dev --host 127.0.0.1 --port 5173
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
- .\.venv\Scripts\python.exe -m pytest backend/tests -q --basetemp .pytest-tmp
+.\.venv\Scripts\python.exe -m pytest backend/tests -q --basetemp .pytest-tmp
 pnpm --dir apps/web test --run
 pnpm --dir apps/web build
 git diff --check
@@ -68,6 +68,10 @@ docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 打开 `http://localhost:5173`。Docker 使用命名卷保存上传数据与 SQLite，升级容器不会清空会话历史。需要迁移或备份时，备份该卷中的 `/data` 即可。
+
+## 开源许可
+
+本项目采用 [Apache License 2.0](LICENSE) 开源。你可以使用、修改和分发代码；再分发时请保留许可证与必要的版权、声明信息。
 
 ## 决策边界
 

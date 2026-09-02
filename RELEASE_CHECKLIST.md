@@ -33,7 +33,7 @@
 - [x] 发布源码、测试、文档和依赖说明已提交
 - [x] 运行数据、日志、覆盖率、Pytest 临时目录和前端缓存已忽略
 - [x] 未跟踪 `.venv`、`node_modules` 或用户数据文件
-- [ ] 由仓库所有者选择并添加适用 License（公开开源时）
+- [x] 已添加 Apache License 2.0
 
 ## Final Gate
 
