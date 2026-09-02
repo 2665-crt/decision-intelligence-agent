@@ -13,6 +13,31 @@ def _client(monkeypatch, tmp_path) -> TestClient:
     return TestClient(importlib.reload(app_module).app)
 
 
+def _default_config_client(monkeypatch, tmp_path, launch_directory) -> TestClient:
+    monkeypatch.setenv("ANALYSIS_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("ANALYSIS_STUDIO_ENV_FILE", raising=False)
+    monkeypatch.setenv("ANALYSIS_STUDIO_LEGACY_ENV_FILES", str(tmp_path / "missing-legacy.env"))
+    for variable in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "DEEPSEEK_MODEL",
+        "OPENAI_COMPATIBLE_NAME",
+        "OPENAI_COMPATIBLE_API_KEY",
+        "OPENAI_COMPATIBLE_BASE_URL",
+        "OPENAI_COMPATIBLE_MODEL",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.chdir(launch_directory)
+    import studio_api.app as app_module
+    import studio_api.store as store_module
+
+    importlib.reload(store_module)
+    return TestClient(importlib.reload(app_module).app)
+
+
 def test_model_switch_does_not_clear_history_and_failed_provider_keeps_conversation(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     created = client.post("/api/conversations", json={"title": "经营趋势", "provider": "simulated", "model": "analysis-sim"})
@@ -43,6 +68,26 @@ def test_clear_history_requires_confirmation_and_provider_status_never_returns_k
     assert client.delete("/api/conversations").status_code == 422
     assert client.delete("/api/conversations?confirm=true").status_code == 204
     assert client.get("/api/conversations").json() == []
+
+
+def test_provider_settings_survive_restart_from_a_different_launch_directory(monkeypatch, tmp_path):
+    first_directory = tmp_path / "first-launch"
+    second_directory = tmp_path / "second-launch"
+    first_directory.mkdir()
+    second_directory.mkdir()
+
+    first_client = _default_config_client(monkeypatch, tmp_path, first_directory)
+    saved = first_client.put(
+        "/api/settings/providers/deepseek",
+        json={"api_key": "restart-safe-key", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+    )
+    restarted_client = _default_config_client(monkeypatch, tmp_path, second_directory)
+    status = restarted_client.get("/api/settings/providers").json()["deepseek"]
+
+    assert saved.status_code == 200
+    assert status["configured"] is True
+    assert status["model"] == "deepseek-chat"
+    assert (tmp_path / "data" / "providers.env").exists()
 
 
 def test_configured_model_id_is_selectable_for_its_provider(monkeypatch, tmp_path):

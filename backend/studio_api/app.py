@@ -41,8 +41,17 @@ from .store import (
 app = FastAPI(title="Analysis Studio")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 
-ENV_FILE = Path(os.getenv("ANALYSIS_STUDIO_ENV_FILE", ".env")).resolve()
-provider_config = ProviderConfigStore(ENV_FILE)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+configured_env_file = os.getenv("ANALYSIS_STUDIO_ENV_FILE")
+ENV_FILE = Path(configured_env_file).resolve() if configured_env_file else ROOT / "providers.env"
+configured_legacy_files = os.getenv("ANALYSIS_STUDIO_LEGACY_ENV_FILES")
+if configured_legacy_files:
+    LEGACY_ENV_FILES = tuple(Path(item).resolve() for item in configured_legacy_files.split(os.pathsep) if item)
+elif configured_env_file:
+    LEGACY_ENV_FILES = ()
+else:
+    LEGACY_ENV_FILES = (PROJECT_ROOT / ".env", PROJECT_ROOT / "backend" / ".env")
+provider_config = ProviderConfigStore(ENV_FILE, LEGACY_ENV_FILES)
 conversation_store = ConversationStore(ROOT / "conversations.sqlite3", legacy_root=ROOT)
 conversation_store.migrate_legacy_sessions()
 

@@ -20,8 +20,9 @@ def mask(value: str) -> str:
 
 
 class ProviderConfigStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, legacy_paths: tuple[Path, ...] = ()):
         self.path = path
+        self.legacy_paths = tuple(item for item in legacy_paths if item.resolve() != path.resolve())
 
     def load(self) -> dict[str, dict[str, str]]:
         values = self._read_file()
@@ -70,11 +71,12 @@ class ProviderConfigStore:
         return adapters
 
     def _read_file(self) -> dict[str, str]:
-        if not self.path.exists():
-            return {}
         parsed: dict[str, str] = {}
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line and not line.lstrip().startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                parsed[key.strip()] = value
+        for source in (*self.legacy_paths, self.path):
+            if not source.exists():
+                continue
+            for line in source.read_text(encoding="utf-8").splitlines():
+                if line and not line.lstrip().startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    parsed[key.strip()] = value
         return parsed

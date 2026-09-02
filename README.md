@@ -7,7 +7,7 @@
 - SQLite 持久化 Conversation / Message / AnalysisState；旧版 `sessions/*/session.json` 会在首次启动时迁移，不删除原文件。
 - 每轮问题仍由受控分析引擎计算，结果保留证据、图表规格、Notebook 和 Markdown / HTML / DOCX 报告；模型不会直接执行代码或读取完整原始数据表。
 - 支持 simulated（默认验收）、OpenAI、DeepSeek 与 OpenAI 兼容接口。模型可在会话顶部切换，历史消息和工件不会丢失。
-- API Key 只写入本机 `.env`，设置页只展示是否已配置和脱敏状态；SQLite 不存储任何 Key。
+- API Key 保存在本机数据目录的 `providers.env`，设置页只展示是否已配置和脱敏状态；SQLite 不存储任何 Key。
 - 左栏可新建、搜索、删除单个会话；“清空全部历史”必须二次确认，删除会话记录及其结果工件。
 
 ## 工作方式
@@ -20,11 +20,21 @@
 
 切换已完成的 Conversation 只读取保存的状态和工件，不会重新运行分析；只有发送新问题或点击“重新生成”才会发起下一轮分析。
 
+## 界面预览
+
+### 初始工作台
+
+![初始工作台布局](docs/images/workspace-empty-state.png)
+
+### 对话分析与图表结果
+
+![对话分析和图表布局](docs/images/workspace-analysis-charts.png)
+
 ## 模型配置与密钥
 
-默认 `simulated / analysis-sim` 不需要 Key，适合本地验收和演示，绝不会请求外部 API。需要真实模型时，在网页的“模型设置”填写对应 Provider 的 Key、Base URL、默认模型并保存，应用会写入根目录 `.env`。也可以从 [deploy/env.example](deploy/env.example) 复制为 `.env` 后手动填写。
+默认 `simulated / analysis-sim` 不需要 Key，适合本地验收和演示，绝不会请求外部 API。需要真实模型时，在网页的“模型设置”填写对应 Provider 的 Key、Base URL、默认模型并保存；应用会将它写入 `.analysis-studio-data/providers.env`（Docker 中为 `/data/providers.env`），重启后仍可使用。旧版根目录或 `backend/.env` 中的配置会自动兼容读取，用户无需重新填写。
 
-`.env` 已被 Git 忽略，请勿提交。`conversations.sqlite3` 只保存会话、消息、分析状态和工件索引，不包含密钥。
+`providers.env` 与 `.env` 均被 Git 忽略，请勿提交。`conversations.sqlite3` 只保存会话、消息、分析状态和工件索引，不包含密钥。
 
 ## 本机启动（默认，不依赖 Docker）
 

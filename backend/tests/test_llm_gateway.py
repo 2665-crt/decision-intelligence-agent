@@ -21,6 +21,20 @@ def test_public_provider_status_masks_key_and_writes_env(tmp_path):
     assert "DEEPSEEK_API_KEY=secret-value" in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
+def test_legacy_provider_configuration_is_migrated_when_saved(tmp_path):
+    legacy = tmp_path / ".env"
+    primary = tmp_path / "data" / "providers.env"
+    legacy.write_text("DEEPSEEK_API_KEY=legacy-key\nDEEPSEEK_MODEL=deepseek-chat\n", encoding="utf-8")
+    config = ProviderConfigStore(primary, (legacy,))
+
+    assert config.public_status()["deepseek"]["configured"] is True
+    config.save("deepseek", {"base_url": "https://api.deepseek.com"})
+
+    persisted = primary.read_text(encoding="utf-8")
+    assert "DEEPSEEK_API_KEY=legacy-key" in persisted
+    assert "DEEPSEEK_MODEL=deepseek-chat" in persisted
+
+
 def test_registry_groups_models_by_provider_and_gateway_uses_simulation():
     assert [item["id"] for item in list_models("deepseek")] == ["deepseek-chat", "deepseek-reasoner"]
     gateway = LLMGateway({"simulated": SimulatedProvider()})
