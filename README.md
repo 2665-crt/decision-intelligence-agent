@@ -41,6 +41,21 @@
 
 ## 本机启动（默认，不依赖 Docker）
 
+### 前置条件
+
+- Git
+- Python 3.12 或更高版本
+- Node.js 与 pnpm（本项目已使用 pnpm 11 验证）
+
+可先执行以下命令确认环境已安装：
+
+```powershell
+git --version
+python --version
+node --version
+pnpm --version
+```
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
