@@ -11,7 +11,7 @@ from .intake import inspect_file, supported
 from .context_manager import ContextManager
 from .conversation_service import ConversationService
 from .conversation_store import ConversationStore
-from .llm.config import ProviderConfigStore
+from .llm.config import MODEL_MIGRATIONS, ProviderConfigStore
 from .llm.gateway import LLMGateway
 from .llm.registry import get_model, list_models, list_providers
 from .questioning import session_title
@@ -54,6 +54,7 @@ else:
 provider_config = ProviderConfigStore(ENV_FILE, LEGACY_ENV_FILES)
 conversation_store = ConversationStore(ROOT / "conversations.sqlite3", legacy_root=ROOT)
 conversation_store.migrate_legacy_sessions()
+conversation_store.migrate_model_aliases(MODEL_MIGRATIONS)
 
 
 def _conversation_analysis(conversation: dict, objective: str) -> dict:

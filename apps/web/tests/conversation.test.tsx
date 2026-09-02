@@ -20,11 +20,11 @@ test("keeps messages visible while switching models and sends a follow-up", asyn
     const path = String(input);
     if (path === "/api/datasets") return Promise.resolve(json([]));
     if (path === "/api/conversations") return Promise.resolve(json([conversation]));
-    if (path === "/api/providers") return Promise.resolve(json([{ id: "simulated", display_name: "本地模拟", models: [{ id: "analysis-sim", display_name: "本地模拟分析" }] }, { id: "openai", display_name: "OpenAI", models: [{ id: "gpt-5-mini", display_name: "GPT-5 mini" }] }]));
+    if (path === "/api/providers") return Promise.resolve(json([{ id: "simulated", display_name: "本地模拟", models: [{ id: "analysis-sim", display_name: "本地模拟分析" }] }, { id: "openai", display_name: "OpenAI", models: [{ id: "gpt-5.6-terra", display_name: "GPT-5.6 Terra" }] }]));
     if (path === "/api/settings/providers") return Promise.resolve(json({}));
     if (path === "/api/conversations/conversation-1") return Promise.resolve(json(conversation));
-    if (path === "/api/models?provider=openai") return Promise.resolve(json([{ id: "gpt-5-mini", display_name: "GPT-5 mini" }]));
-    if (path === "/api/conversations/conversation-1/model" && init?.method === "PUT") return Promise.resolve(json({ ...conversation, selected_provider: "openai", selected_model: "gpt-5-mini" }));
+    if (path === "/api/models?provider=openai") return Promise.resolve(json([{ id: "gpt-5.6-terra", display_name: "GPT-5.6 Terra" }]));
+    if (path === "/api/conversations/conversation-1/model" && init?.method === "PUT") return Promise.resolve(json({ ...conversation, selected_provider: "openai", selected_model: "gpt-5.6-terra" }));
     if (path === "/api/conversations/conversation-1/messages" && init?.method === "POST") return Promise.resolve(json({ id: "m2", role: "assistant", content: "已完成", status: "completed" }));
     return Promise.resolve(json({}));
   });
@@ -33,7 +33,7 @@ test("keeps messages visible while switching models and sends a follow-up", asyn
   render(<App />);
   expect(await screen.findByText("分析营业收入趋势")).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("模型 Provider"), { target: { value: "openai" } });
-  await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("gpt-5-mini"));
+  await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("gpt-5.6-terra"));
   expect(screen.getByText("分析营业收入趋势")).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("继续分析"), { target: { value: "那 2025 年呢？" } });
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -80,8 +80,8 @@ test("shows only masked provider configuration in settings", async () => {
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     const path = String(input);
     if (path === "/api/datasets" || path === "/api/conversations") return Promise.resolve(json([]));
-    if (path === "/api/providers") return Promise.resolve(json([{ id: "openai", display_name: "OpenAI", models: [{ id: "gpt-5-mini", display_name: "GPT-5 mini" }] }]));
-    if (path === "/api/settings/providers") return Promise.resolve(json({ openai: { configured: true, api_key_masked: "sk-a…1234", base_url: "https://api.openai.com/v1", model: "gpt-5-mini" } }));
+    if (path === "/api/providers") return Promise.resolve(json([{ id: "openai", display_name: "OpenAI", models: [{ id: "gpt-5.6-terra", display_name: "GPT-5.6 Terra" }] }]));
+    if (path === "/api/settings/providers") return Promise.resolve(json({ openai: { configured: true, api_key_masked: "sk-a…1234", base_url: "https://api.openai.com/v1", model: "gpt-5.6-terra" } }));
     return Promise.resolve(json({}));
   }));
 
@@ -92,13 +92,13 @@ test("shows only masked provider configuration in settings", async () => {
   expect(screen.queryByText("secret-value")).not.toBeInTheDocument();
 });
 
-test("reloads provider models after saving a configured model id", async () => {
+test("saves a curated model selection to the persistent local provider store", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path === "/api/datasets" || path === "/api/conversations") return Promise.resolve(json([]));
-    if (path === "/api/providers") return Promise.resolve(json([{ id: "openai", display_name: "OpenAI", models: [{ id: "gpt-5-mini", display_name: "GPT-5 mini" }] }, { id: "deepseek", display_name: "DeepSeek", models: [{ id: "deepseek-v4-flash", display_name: "deepseek-v4-flash" }] }]));
-    if (path === "/api/settings/providers") return Promise.resolve(json({ openai: { configured: false, api_key_masked: "", base_url: "", model: "" } }));
-    if (path === "/api/settings/providers/openai" && init?.method === "PUT") return Promise.resolve(json({ configured: true, api_key_masked: "sk-a…1234", base_url: "https://api.openai.com/v1", model: "gpt-5-mini" }));
+    if (path === "/api/providers") return Promise.resolve(json([{ id: "openai", display_name: "OpenAI", models: [{ id: "gpt-5.6-terra", display_name: "GPT-5.6 Terra" }, { id: "gpt-5.6-luna", display_name: "GPT-5.6 Luna" }] }, { id: "deepseek", display_name: "DeepSeek", models: [{ id: "deepseek-v4-flash", display_name: "deepseek-v4-flash" }] }]));
+    if (path === "/api/settings/providers") return Promise.resolve(json({ openai: { configured: false, api_key_masked: "", base_url: "https://api.openai.com/v1", model: "gpt-5.6-terra" } }));
+    if (path === "/api/settings/providers/openai" && init?.method === "PUT") return Promise.resolve(json({ configured: true, api_key_masked: "sk-a…1234", base_url: "https://api.openai.com/v1", model: "gpt-5.6-luna" }));
     return Promise.resolve(json({}));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -106,7 +106,8 @@ test("reloads provider models after saving a configured model id", async () => {
   render(<App />);
   fireEvent.click(screen.getByRole("button", { name: "设置" }));
   await screen.findByRole("heading", { name: "模型设置" });
-  fireEvent.change(screen.getByLabelText("模型名"), { target: { value: "gpt-5-mini" } });
+  expect(screen.getByText("Key 仅保存到本机 providers.env，保存后不会回显。")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("默认模型"), { target: { value: "gpt-5.6-luna" } });
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
   await waitFor(() => expect(fetchMock.mock.calls.filter(([path]) => path === "/api/providers")).toHaveLength(2));

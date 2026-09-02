@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 
 from fastapi.testclient import TestClient
+from studio_api.conversation_store import ConversationStore
+from studio_api.llm.config import MODEL_MIGRATIONS
 
 
 def _client(monkeypatch, tmp_path) -> TestClient:
@@ -45,21 +47,21 @@ def test_model_switch_does_not_clear_history_and_failed_provider_keeps_conversat
 
     sent = client.post(f"/api/conversations/{conversation_id}/messages", json={"content": "分析营业收入趋势"})
     renamed = client.patch(f"/api/conversations/{conversation_id}", json={"title": "2025 经营趋势"})
-    changed = client.put(f"/api/conversations/{conversation_id}/model", json={"provider": "openai", "model": "gpt-5-mini"})
+    changed = client.put(f"/api/conversations/{conversation_id}/model", json={"provider": "openai", "model": "gpt-5.6-terra"})
     loaded = client.get(f"/api/conversations/{conversation_id}").json()
 
     assert sent.status_code == 201
     assert renamed.json()["title"] == "2025 经营趋势"
     assert changed.status_code == 200
     assert len(loaded["messages"]) == 2
-    assert loaded["selected_model"] == "gpt-5-mini"
+    assert loaded["selected_model"] == "gpt-5.6-terra"
 
 
 def test_clear_history_requires_confirmation_and_provider_status_never_returns_key(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     client.post("/api/conversations", json={"title": "第一个"})
 
-    saved = client.put("/api/settings/providers/deepseek", json={"api_key": "secret-value", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"})
+    saved = client.put("/api/settings/providers/deepseek", json={"api_key": "secret-value", "base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash"})
     status = client.get("/api/settings/providers").json()["deepseek"]
 
     assert saved.status_code == 200
@@ -79,14 +81,14 @@ def test_provider_settings_survive_restart_from_a_different_launch_directory(mon
     first_client = _default_config_client(monkeypatch, tmp_path, first_directory)
     saved = first_client.put(
         "/api/settings/providers/deepseek",
-        json={"api_key": "restart-safe-key", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+        json={"api_key": "restart-safe-key", "base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash"},
     )
     restarted_client = _default_config_client(monkeypatch, tmp_path, second_directory)
     status = restarted_client.get("/api/settings/providers").json()["deepseek"]
 
     assert saved.status_code == 200
     assert status["configured"] is True
-    assert status["model"] == "deepseek-chat"
+    assert status["model"] == "deepseek-v4-flash"
     assert (tmp_path / "data" / "providers.env").exists()
 
 
@@ -110,6 +112,16 @@ def test_configured_model_id_is_selectable_for_its_provider(monkeypatch, tmp_pat
     assert "deepseek-v4-flash" in [item["id"] for item in deepseek["models"]]
     assert created.status_code == 201
     assert created.json()["selected_model"] == "deepseek-v4-flash"
+
+
+def test_existing_conversations_migrate_retired_model_ids(tmp_path):
+    store = ConversationStore(tmp_path / "conversations.sqlite3")
+    conversation = store.create_conversation("历史会话", "deepseek", "deepseek-chat")
+
+    changed = store.migrate_model_aliases(MODEL_MIGRATIONS)
+
+    assert changed == 1
+    assert store.get_conversation(conversation["id"])["selected_model"] == "deepseek-v4-flash"
 
 
 def test_conversation_binds_and_removes_only_its_own_files(monkeypatch, tmp_path):

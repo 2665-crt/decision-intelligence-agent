@@ -137,6 +137,17 @@ class ConversationStore:
                 raise KeyError(conversation_id)
         return self.get_conversation(conversation_id)
 
+    def migrate_model_aliases(self, aliases: dict[str, dict[str, str]]) -> int:
+        changed = 0
+        with self._connect() as connection:
+            for provider, mappings in aliases.items():
+                for outdated, replacement in mappings.items():
+                    changed += connection.execute(
+                        "UPDATE conversations SET selected_model = ?, updated_at = ? WHERE selected_provider = ? AND selected_model = ?",
+                        (replacement, _now(), provider, outdated),
+                    ).rowcount
+        return changed
+
     def update_title(self, conversation_id: str, title: str) -> dict:
         with self._connect() as connection:
             updated = connection.execute(

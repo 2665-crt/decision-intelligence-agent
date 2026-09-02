@@ -9,7 +9,7 @@
 - **受控可信回答**：数据计算由确定性分析引擎完成；模型仅基于受控结果解释，已验证结论标记 `VERIFIED`，无法由数据证明的内容标记 `UNVERIFIED`。
 - SQLite 持久化 Conversation / Message / AnalysisState；旧版 `sessions/*/session.json` 会在首次启动时迁移，不删除原文件。
 - 每轮问题仍由受控分析引擎计算，结果保留证据、图表规格、Notebook 和 Markdown / HTML / DOCX 报告；模型不会直接执行代码或读取完整原始数据表。
-- 支持 simulated（默认验收）、OpenAI、DeepSeek 与 OpenAI 兼容接口。模型可在会话顶部切换，历史消息和工件不会丢失。
+- 支持本地模拟、OpenAI、Claude、Gemini、DeepSeek、Qwen、Kimi、智谱 GLM、MiniMax 及自定义 OpenAI 兼容接口。模型可在会话顶部切换，历史消息和工件不会丢失。
 - API Key 保存在本机数据目录的 `providers.env`，设置页只展示是否已配置和脱敏状态；SQLite 不存储任何 Key。
 - 左栏可新建、搜索、删除单个会话；“清空全部历史”必须二次确认，删除会话记录及其结果工件。
 
@@ -35,7 +35,11 @@
 
 ## 模型配置与密钥
 
-默认 `simulated / analysis-sim` 不需要 Key，适合本地验收和演示，绝不会请求外部 API。需要真实模型时，在网页的“模型设置”填写对应 Provider 的 Key、Base URL、默认模型并保存；应用会将它写入 `.analysis-studio-data/providers.env`（Docker 中为 `/data/providers.env`），重启后仍可使用。旧版根目录或 `backend/.env` 中的配置会自动兼容读取，用户无需重新填写。
+默认 `simulated / analysis-sim` 不需要 Key，适合本地验收和演示，绝不会请求外部 API。需要真实模型时，在网页的“模型设置”选择 Provider、填写 Key，并保存默认地址与模型；应用会将它写入 `.analysis-studio-data/providers.env`（Docker 中为 `/data/providers.env`），重启后仍可使用。保存后再点击“测试已保存配置”，可以检查 Key、网络、账户权限和模型是否可用。旧版根目录或 `backend/.env` 中的配置会自动兼容读取，用户无需重新填写。
+
+设置页仅保留当前主流且稳定的文本模型：OpenAI GPT-5.6、Claude 5 / Haiku 4.5、Gemini 3.7 / 3.6 Flash、DeepSeek V4、Qwen 3.8、Kimi K3 / K2.6、GLM-5.3 与 MiniMax M2.7。历史配置中的 `gpt-5`、`gpt-5-mini`、`deepseek-chat`、`deepseek-reasoner` 及已下线 Kimi ID 会自动迁移到可用替代模型；旧选项不会继续出现在界面中。
+
+OpenAI 使用 Responses API，Claude 使用 Messages API，Gemini 使用 Interactions API；DeepSeek、Qwen、Kimi、GLM、MiniMax 和“自定义兼容接口”使用各自官方的 OpenAI Chat Completions 兼容地址。百炼 Qwen 默认使用中国（北京）地址；如你的百炼工作区在其他区域，请在设置中替换为该工作区官方提供的兼容地址。
 
 `providers.env` 与 `.env` 均被 Git 忽略，请勿提交。`conversations.sqlite3` 只保存会话、消息、分析状态和工件索引，不包含密钥。
 
